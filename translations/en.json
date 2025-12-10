@@ -1,0 +1,14 @@
+{
+  "title": "SmartHQ",
+  "config": {
+    "step": {
+      "pick_implementation": {
+        "title": "Link your SmartHQ account",
+        "description": "Click **Link** to open the SmartHQ login page and authorize Home Assistant."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Only a single instance is allowed."
+    }
+  }
+}
