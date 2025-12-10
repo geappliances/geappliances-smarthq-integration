@@ -1,0 +1,39 @@
+dump:
+  name: Dump cached SmartHQ data
+  description: >
+    Log current devices, presence, and settings for troubleshooting.
+    If entry_id is omitted, dumps all SmartHQ entries.
+  fields:
+    entry_id:
+      name: Config entry ID
+      description: Optional SmartHQ config entry_id to dump.
+      example: 1a2b3c4d5e6f7g8h9i0j
+      required: false
+      selector:
+        text:
+
+set_cavity_light_mode:
+  name: Set Cavity Light Mode
+  description: Set the brightness mode for the smoker's cavity light
+  fields:
+    device_id:
+      name: Device ID
+      description: The SmartHQ device ID
+      required: true
+      example: "00000000000000000000000000000000000000000000000000000000000"
+      selector:
+        text:
+    service_id:
+      name: Service ID
+      description: The service ID for the cavity light
+      required: true
+      example: "00000000-0000-0000-0000-000000000000"
+      selector:
+        text:
+    mode:
+      name: Brightness Mode
+      description: The brightness mode token (e.g., cloud.smarthq.type.mode.off, cloud.smarthq.type.mode.on)
+      required: true
+      example: "cloud.smarthq.type.mode.on"
+      selector:
+        text:

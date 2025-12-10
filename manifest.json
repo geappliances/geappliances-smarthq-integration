@@ -1,0 +1,14 @@
+{
+  "domain": "smarthq",
+  "name": "SmartHQ",
+  "codeowners": ["@Jaby-Firstbuild"],
+  "config_flow": true,
+  "dependencies": ["application_credentials"],
+  "documentation": "https://github.com/Jaby-Firstbuild/HA_SmartHQ",
+  "integration_type": "hub",
+  "iot_class": "cloud_push",
+  "issue_tracker": "https://github.com/Jaby-Firstbuild/HA_SmartHQ/issues",
+  "loggers": ["custom_components.smarthq"],
+  "requirements": ["aiohttp>=3.8.0"],
+  "version": "1.0.0"
+}
