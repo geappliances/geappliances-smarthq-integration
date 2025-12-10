@@ -13,9 +13,8 @@ This integration uses Home Assistant **Application Credentials** and the **My Ho
 ## Supported Devices
 Based on your current setup, this integration supports:
 - **Smoker** - 31 entities
-- **Coffee Brewer** - 15 entities
-
-Total: **2 devices, 46 entities**
+<img width="1518" height="810" alt="image" src="https://github.com/user-attachments/assets/07a58a4d-d24f-4909-b4c0-4c3c1f038616" />
+Total: **1 devices, 31 entities**
 
 ## Features
 - Real-time updates via WebSocket
