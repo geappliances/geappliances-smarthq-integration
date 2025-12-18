@@ -59,10 +59,15 @@ Before adding the integration, you need to obtain OAuth2 credentials from SmartH
    - After selecting **"SmartHQ"** , if the integration is not found in the list, please restart HA then try again.
 5. You'll be redirected to SmartHQ login page
 6. Log in with your SmartHQ account
-7. Click **"Authorize"** to grant Home Assistant access
-8. Click **"Save"** when redirected back
-9. Click **"Link account"** to complete the setup
-10. Click **"Finish"** when you see the success message
+7. If you found **"Authorize"** window, Click **"Authorize"** to grant Home Assistant access and click **"Save"**
+
+<img width="742" height="308" alt="image" src="https://github.com/user-attachments/assets/21aff895-9903-45f1-add8-25baea30c9ed" />
+
+8. Click **"Link account"** to complete the setup
+
+<img width="355" height="269" alt="image" src="https://github.com/user-attachments/assets/e7b7b933-7ce2-4fbb-a59f-da79c7d679d3" />
+
+9. Click **"Finish"** when you see the success message
 
 Your SmartHQ devices will now appear in Home Assistant!
 
