@@ -56,7 +56,7 @@ Before adding the integration, you need to obtain OAuth2 credentials from SmartH
 1. Go to **Settings** → **Devices & Services**
 2. Click **"+ Add Integration"**
 3. Search for and select **"SmartHQ"**
-   After selecting **"SmartHQ"** , if the integration is not found in the list, please restart HA then try again.
+   - After selecting **"SmartHQ"** , if the integration is not found in the list, please restart HA then try again.
 5. You'll be redirected to SmartHQ login page
 6. Log in with your SmartHQ account
 7. Click **"Authorize"** to grant Home Assistant access
