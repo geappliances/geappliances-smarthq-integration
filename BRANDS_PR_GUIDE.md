@@ -1,63 +1,63 @@
-# Home Assistant Brands PR 제출 가이드
+# Home Assistant Brands PR Submission Guide
 
-SmartHQ 통합의 공식 로고를 Home Assistant Brands 저장소에 제출하는 방법입니다.
+Guide for submitting official SmartHQ integration logos to the Home Assistant Brands repository.
 
-## 준비된 파일
+## Prepared Files
 
-- `icon.png`: 256x256 픽셀 (GE Appliances 아이콘)
-- `logo.png`: 512x512 픽셀 (GE Appliances 로고)
+- `icon.png`: 256x256 pixels (GE Appliances icon)
+- `logo.png`: 512x512 pixels (GE Appliances logo)
 
-## PR 제출 절차
+## PR Submission Process
 
-### 1. Home Assistant Brands 저장소 Fork
+### 1. Fork the Home Assistant Brands Repository
 
-1. https://github.com/home-assistant/brands 방문
-2. 우측 상단의 **Fork** 버튼 클릭
-3. 자신의 GitHub 계정으로 Fork
+1. Visit https://github.com/home-assistant/brands
+2. Click the **Fork** button in the top right
+3. Fork to your GitHub account
 
-### 2. Fork한 저장소 Clone
+### 2. Clone Your Forked Repository
 
 ```bash
 git clone https://github.com/YOUR_USERNAME/brands.git
 cd brands
 ```
 
-### 3. 새 브랜치 생성
+### 3. Create a New Branch
 
 ```bash
 git checkout -b add-smarthq-icons
 ```
 
-### 4. SmartHQ 폴더 생성 및 파일 복사
+### 4. Create SmartHQ Folder and Copy Files
 
 ```bash
-# custom_integrations 폴더로 이동
+# Navigate to custom_integrations folder
 cd custom_integrations
 
-# smarthq 폴더 생성
+# Create smarthq folder
 mkdir -p smarthq
 
-# 현재 저장소의 icon.png와 logo.png를 복사
-# (이 명령은 smarthq 통합 폴더에서 실행)
+# Copy icon.png and logo.png from this repository
+# (Run this command from the smarthq integration folder)
 cp /root/homeassistant/custom_components/smarthq/icon.png custom_integrations/smarthq/
 cp /root/homeassistant/custom_components/smarthq/logo.png custom_integrations/smarthq/
 ```
 
-### 5. 이미지 최적화 (선택사항)
+### 5. Optimize Images (Optional)
 
-Brands 저장소는 이미지가 최적화되어 있기를 권장합니다:
+The Brands repository recommends optimized images:
 
 ```bash
-# optipng 설치 (이미 설치되어 있을 수 있음)
+# Install optipng (may already be installed)
 # Debian/Ubuntu: sudo apt-get install optipng
 # macOS: brew install optipng
 
-# 이미지 최적화
+# Optimize images
 optipng -o7 custom_integrations/smarthq/icon.png
 optipng -o7 custom_integrations/smarthq/logo.png
 ```
 
-### 6. 변경사항 커밋
+### 6. Commit Changes
 
 ```bash
 git add custom_integrations/smarthq/
@@ -70,18 +70,18 @@ git commit -m "Add SmartHQ custom integration icons
 "
 ```
 
-### 7. GitHub에 Push
+### 7. Push to GitHub
 
 ```bash
 git push origin add-smarthq-icons
 ```
 
-### 8. Pull Request 생성
+### 8. Create Pull Request
 
-1. GitHub에서 Fork한 저장소로 이동
-2. **Compare & pull request** 버튼 클릭
-3. PR 제목: `Add SmartHQ custom integration icons`
-4. PR 설명 작성:
+1. Navigate to your forked repository on GitHub
+2. Click the **Compare & pull request** button
+3. PR Title: `Add SmartHQ custom integration icons`
+4. PR Description:
 
 ```markdown
 ## Summary
@@ -107,54 +107,54 @@ Add icons for the SmartHQ custom integration.
 - [x] Domain name matches integration manifest
 ```
 
-5. **Create pull request** 클릭
+5. **Create pull request** button
 
-## PR 승인 후
+## After PR Approval
 
-PR이 승인되고 병합되면:
+Once the PR is approved and merged:
 
-- 이미지는 `https://brands.home-assistant.io/smarthq/icon.png` 에서 접근 가능
-- 이미지는 `https://brands.home-assistant.io/smarthq/logo.png` 에서 접근 가능
-- Home Assistant가 자동으로 통합의 아이콘을 표시
-- 브라우저 캐시 (7일) 및 Cloudflare 캐시 (24시간)로 인해 표시까지 시간이 걸릴 수 있음
+- Images will be accessible at `https://brands.home-assistant.io/smarthq/icon.png`
+- Images will be accessible at `https://brands.home-assistant.io/smarthq/logo.png`
+- Home Assistant will automatically display the integration's icon
+- May take time to appear due to browser cache (7 days) and Cloudflare cache (24 hours)
 
-## 이미지 요구사항
+## Image Requirements
 
 ### Icon
-- 정사각형 (1:1 비율)
-- 256x256 픽셀 (필수)
-- 512x512 픽셀 (선택, `icon@2x.png`)
-- PNG 포맷
-- 투명 배경 권장
+- Square aspect ratio (1:1)
+- 256x256 pixels (required)
+- 512x512 pixels (optional, `icon@2x.png`)
+- PNG format
+- Transparent background preferred
 
 ### Logo
-- 브랜드 비율 유지
-- 짧은 쪽이 128-256 픽셀 (필수)
-- 짧은 쪽이 256-512 픽셀 (선택, `logo@2x.png`)
-- PNG 포맷
-- 투명 배경 권장
+- Maintain brand aspect ratio
+- Shortest side 128-256 pixels (required)
+- Shortest side 256-512 pixels (optional, `logo@2x.png`)
+- PNG format
+- Transparent background preferred
 
-## 참고 자료
+## References
 
-- [Home Assistant Brands 저장소](https://github.com/home-assistant/brands)
-- [기존 geappliances 아이콘](https://github.com/home-assistant/brands/tree/master/custom_integrations/geappliances)
-- [이미지 리사이저 도구](https://redketchup.io/image-resizer)
-- [PNG 최적화 도구](https://tinypng.com/)
+- [Home Assistant Brands Repository](https://github.com/home-assistant/brands)
+- [Existing geappliances icons](https://github.com/home-assistant/brands/tree/master/custom_integrations/geappliances)
+- [Image Resizer Tool](https://redketchup.io/image-resizer)
+- [PNG Optimization Tool](https://tinypng.com/)
 
-## 문제 해결
+## Troubleshooting
 
-### 이미지가 표시되지 않는 경우
+### Icons Not Displaying
 
-1. **캐시 지우기**: 브라우저 하드 새로고침 (Ctrl+F5 또는 Cmd+Shift+R)
-2. **도메인 확인**: manifest.json의 domain이 "smarthq"인지 확인
-3. **시간 대기**: PR 병합 후 24-48시간 대기 (캐시 때문)
-4. **URL 직접 확인**: `https://brands.home-assistant.io/smarthq/icon.png` 접속해보기
+1. **Clear Cache**: Hard refresh browser (Ctrl+F5 or Cmd+Shift+R)
+2. **Verify Domain**: Confirm manifest.json domain is "smarthq"
+3. **Wait**: Allow 24-48 hours after PR merge (due to caching)
+4. **Direct URL Check**: Visit `https://brands.home-assistant.io/smarthq/icon.png` directly
 
-### PR이 거절된 경우
+### PR Rejected
 
-일반적인 거절 이유:
-- 이미지 크기가 요구사항과 다름
-- 이미지 최적화가 안 됨
-- 투명 배경이 없음
-- 저작권 문제
-- Home Assistant 브랜딩 사용 (커스텀 통합은 HA 로고 사용 금지)
+Common rejection reasons:
+- Image size does not meet requirements
+- Images not optimized
+- Missing transparent background
+- Copyright issues
+- Using Home Assistant branding (custom integrations must not use HA logos)
