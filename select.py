@@ -383,6 +383,102 @@ class SmartHQCookingModeSelect(SelectEntity):
         self.schedule_update_ha_state()
 
 
+class SmartHQCoffeeBrewerSelect(SelectEntity):
+    """Coffee Brewer select entity (Brew Strength, Size, Temperature)"""
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, device_id: str, service_id: str, select_type: str):
+        self.hass = hass
+        self._entry = entry
+        self._device_id = device_id
+        self._service_id = service_id
+        self._select_type = select_type
+
+        info = _dev(hass, entry, device_id).get("info") or {}
+        device_name = info.get("nickname") or info.get("name") or "SmartHQ"
+
+        # Setup based on select type
+        if select_type == "strength":
+            self._attr_name = f"{device_name} Brew Strength"
+            self._attr_unique_id = f"{DOMAIN}:{entry.entry_id}:{device_id}:select:brew_strength"
+            self._attr_options = ["Light", "Medium", "Bold"]
+            self._attr_icon = "mdi:coffee-maker"
+        elif select_type == "size":
+            self._attr_name = f"{device_name} Brew Size"
+            self._attr_unique_id = f"{DOMAIN}:{entry.entry_id}:{device_id}:select:brew_size"
+            self._attr_options = ["10 Oz", "12 Oz", "14 Oz", "Carafe"]
+            self._attr_icon = "mdi:cup"
+        elif select_type == "temperature":
+            self._attr_name = f"{device_name} Brew Temperature"
+            self._attr_unique_id = f"{DOMAIN}:{entry.entry_id}:{device_id}:select:brew_temperature"
+            self._attr_options = [f"{t}°C" for t in range(85, 96)]  # 85-95°C
+            self._attr_icon = "mdi:thermometer"
+
+    @property
+    def device_info(self):
+        info = _dev(self.hass, self._entry, self._device_id).get("info") or {}
+        name = info.get("nickname") or info.get("name") or "SmartHQ"
+        model = info.get("model") or info.get("deviceType") or ""
+        sw = info.get("firmwareRevision") or ""
+        return {
+            "identifiers": {(DOMAIN, self._device_id)},
+            "manufacturer": "GE Appliances",
+            "name": name,
+            "model": model,
+            "sw_version": sw,
+        }
+
+    @property
+    def current_option(self) -> str:
+        """Get current selection from bucket storage."""
+        bucket = _bucket(self.hass, self._entry)
+        if "coffee_brewer_settings" not in bucket:
+            bucket["coffee_brewer_settings"] = {}
+        if self._device_id not in bucket["coffee_brewer_settings"]:
+            bucket["coffee_brewer_settings"][self._device_id] = {
+                "strength": "Medium",
+                "size": "12 Oz",
+                "temperature": "90°C"
+            }
+        
+        settings = bucket["coffee_brewer_settings"][self._device_id]
+        return settings.get(self._select_type, self._attr_options[0])
+
+    async def async_select_option(self, option: str) -> None:
+        """Store brew setting selection."""
+        bucket = _bucket(self.hass, self._entry)
+        if "coffee_brewer_settings" not in bucket:
+            bucket["coffee_brewer_settings"] = {}
+        if self._device_id not in bucket["coffee_brewer_settings"]:
+            bucket["coffee_brewer_settings"][self._device_id] = {
+                "strength": "Medium",
+                "size": "12 Oz",
+                "temperature": "90°C"
+            }
+        
+        bucket["coffee_brewer_settings"][self._device_id][self._select_type] = option
+        
+        _LOGGER.info(
+            "[COFFEE_BREWER] Device %s: Set %s to %s",
+            self._device_id[:8], self._select_type, option
+        )
+        self.schedule_update_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_DEVICE_UPDATED.format(device_id=self._device_id),
+                self._signal_update,
+            )
+        )
+        self._signal_update()
+
+    def _signal_update(self) -> None:
+        self.schedule_update_ha_state()
+
+
 class SmartHQCookTargetMethodSelect(SelectEntity):
     """Cook Target Method select entity (Cook Time / Probe Target)"""
     _attr_should_poll = False
@@ -518,6 +614,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         if "smoker" in device_type:
             _LOGGER.info("[SELECT] Creating Cook Target Method select: device=%s", did[:8])
             entities.append(SmartHQCookTargetMethodSelect(hass, entry, did))
+        
+        # Coffee Brewer select entities (Strength, Size, Temperature)
+        if "coffeebrewer" in device_type:
+            # Find coffee brewer service (v1 or v2)
+            for sid, svc in services.items():
+                if not isinstance(svc, dict):
+                    continue
+                stype = str(svc.get("serviceType") or "")
+                
+                if "coffeebrewer.v1" in stype or "coffeebrewer.v2" in stype:
+                    _LOGGER.info("[SELECT] Creating Coffee Brewer selects: device=%s service=%s", did[:8], sid[:8])
+                    entities.append(SmartHQCoffeeBrewerSelect(hass, entry, did, sid, "strength"))
+                    entities.append(SmartHQCoffeeBrewerSelect(hass, entry, did, sid, "size"))
+                    entities.append(SmartHQCoffeeBrewerSelect(hass, entry, did, sid, "temperature"))
+                    break
     
     _LOGGER.info("[SELECT] Adding %d select entities", len(entities))
     async_add_entities(entities, update_before_add=False)

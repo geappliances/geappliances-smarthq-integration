@@ -251,6 +251,45 @@ class SmartHQCoffeeBrewerButton(ButtonEntity):
                 "commandType": self._command_type
             }
             
+            # For START command, add brewing parameters
+            if self._button_type == "start":
+                # Get settings from bucket storage
+                settings = bucket.get("coffee_brewer_settings", {}).get(self._device_id, {})
+                strength_str = settings.get("strength", "Medium")
+                size_str = settings.get("size", "12 Oz")
+                temp_str = settings.get("temperature", "90°C")
+                
+                # Convert strength to integer (0=Light, 1=Medium, 2=Bold)
+                strength_map = {"Light": 0, "Medium": 1, "Bold": 2}
+                strength_value = strength_map.get(strength_str, 1)
+                
+                # Extract volume in oz (e.g., "12 Oz" -> 12.0)
+                volume_value = 12.0
+                if size_str != "Carafe":
+                    try:
+                        volume_value = float(size_str.split()[0])
+                    except (ValueError, IndexError):
+                        volume_value = 12.0
+                else:
+                    volume_value = 14.0  # Carafe size
+                
+                # Extract temperature (e.g., "90°C" -> 90.0)
+                try:
+                    temp_value = float(temp_str.replace("°C", ""))
+                except ValueError:
+                    temp_value = 90.0
+                
+                # Add parameters to command
+                command["strength"] = strength_value
+                command["volumeSingle"] = volume_value
+                command["volumeUnits"] = "cloud.smarthq.type.volumeunits.fluidounces"
+                command["temperatureCelsius"] = temp_value
+                
+                _LOGGER.info(
+                    "[COFFEE_BREW] Brewing with: strength=%s(%d), size=%s(%.1f oz), temp=%s(%.1f°C)",
+                    strength_str, strength_value, size_str, volume_value, temp_str, temp_value
+                )
+            
             # Send via REST API
             api = bucket.get("api")
             if api:
