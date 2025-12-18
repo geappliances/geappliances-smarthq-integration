@@ -24,24 +24,32 @@ Before adding the integration, you need to obtain OAuth2 credentials from SmartH
 3. Click **"Apps"** in the top menu
 4. Click **"Add app"** button
 
+<img width="944" height="585" alt="image" src="https://github.com/user-attachments/assets/65e43b22-27cc-499d-bab4-097d6e0d70cb" />
+
 #### Step 2: Configure Your App
 1. Enter a **Machine name** (e.g., "homeassistant")
 2. Set **Callback URL** to: `https://my.home-assistant.io/redirect/oauth`
 3. Click **"ADD APP"**
 4. Copy your **Client ID** and **Client Secret** (you'll need these)
 
+<img width="1245" height="636" alt="image" src="https://github.com/user-attachments/assets/9d70bb9d-72d4-456c-a72c-ddd713edda7d" />
+
 #### Step 3: Add Credentials to Home Assistant
 1. In Home Assistant, go to **Settings** → **Devices & Services**
 2. Click the three-dot menu (⋮) in the top right
 3. Select **"Application Credentials"**
-4. Search for and select **"SmartHQ"**
-5. If you already have OAuth Client ID/Client Secret:
+4. Click **"Add application credential"** in the bottom right
+5. Search and select **"SmartHQ"** in **"Integration"**section
+6. If you already have OAuth Client ID/Client Secret:
+   - Enter **Name**
    - Enter your **Client ID** (OAuth2 Client ID)
    - Enter your **Client Secret** (OAuth2 Client Secret)
    - Click **"Add"**
-6. If you don't have credentials yet:
-   - Click **"Configure"** or follow the link to SmartHQ Developer Portal
-   - Complete the app registration steps above
+
+<img width="544" height="655" alt="image" src="https://github.com/user-attachments/assets/425033db-7b29-4329-a819-9615b2dd0eca" />
+
+7. If you don't have credentials yet:
+   - Follow the **Step1** & **Step2** and complete the app registration steps above
    - Return and enter your credentials
 
 ### 3. Add the SmartHQ Integration
