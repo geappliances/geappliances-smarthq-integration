@@ -39,7 +39,7 @@ Before adding the integration, you need to obtain OAuth2 credentials from SmartH
 2. Click the three-dot menu (⋮) in the top right
 3. Select **"Application Credentials"**
 4. Click **"Add application credential"** in the bottom right
-5. Search and select **"SmartHQ"** in **"Integration"**section
+5. Search and select **"SmartHQ"** in **"Integration"** section
 6. If you already have OAuth Client ID/Client Secret:
    - Enter **Name**
    - Enter your **Client ID** (OAuth2 Client ID)
