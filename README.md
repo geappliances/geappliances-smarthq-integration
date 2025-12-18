@@ -1,38 +1,158 @@
-# SmartHQ (Authorization Code, no PKCE, empty scope)
+# SmartHQ Home Assistant Integration
 
-This integration uses Home Assistant **Application Credentials** and the **My Home Assistant** redirect.
-- No PKCE (client secret auth)
-- Empty scope
+Home Assistant custom integration for GE Appliances SmartHQ connected devices.
 
-## Install
-1) Copy this folder to `/config/custom_components/smarthq`
-2) Restart Home Assistant
-3) Go to Settings → Devices & Services → **Application Credentials**, add **Client ID/Secret** for SmartHQ
-4) Add Integration → SmartHQ → Link
+This integration uses **OAuth2 Application Credentials** with Authorization Code flow (no PKCE, empty scope).
+
+## Installation
+
+### 1. Install the Integration
+Copy this folder to your Home Assistant configuration directory:
+```bash
+/config/custom_components/smarthq
+```
+
+Restart Home Assistant after installation.
+
+### 2. Setup Application Credentials
+
+Before adding the integration, you need to obtain OAuth2 credentials from SmartHQ Developer Portal:
+
+#### Step 1: Register Your Application
+1. Open a browser and go to [SmartHQ Developer Portal](https://developer.smarthq.com)
+2. Log in with your SmartHQ account
+3. Click **"Apps"** in the top menu
+4. Click **"Add app"** button
+
+#### Step 2: Configure Your App
+1. Enter a **Machine name** (e.g., "homeassistant")
+2. Set **Callback URL** to: `https://my.home-assistant.io/redirect/oauth`
+3. Click **"ADD APP"**
+4. Copy your **Client ID** and **Client Secret** (you'll need these)
+
+#### Step 3: Add Credentials to Home Assistant
+1. In Home Assistant, go to **Settings** → **Devices & Services**
+2. Click the three-dot menu (⋮) in the top right
+3. Select **"Application Credentials"**
+4. Search for and select **"SmartHQ"**
+5. If you already have OAuth Client ID/Client Secret:
+   - Enter your **Client ID** (OAuth2 Client ID)
+   - Enter your **Client Secret** (OAuth2 Client Secret)
+   - Click **"Add"**
+6. If you don't have credentials yet:
+   - Click **"Configure"** or follow the link to SmartHQ Developer Portal
+   - Complete the app registration steps above
+   - Return and enter your credentials
+
+### 3. Add the SmartHQ Integration
+1. Go to **Settings** → **Devices & Services**
+2. Click **"+ Add Integration"**
+3. Search for and select **"SmartHQ"**
+4. You'll be redirected to SmartHQ login page
+5. Log in with your SmartHQ account
+6. Click **"Authorize"** to grant Home Assistant access
+7. Click **"Save"** when redirected back
+8. Click **"Link account"** to complete the setup
+9. Click **"Finish"** when you see the success message
+
+Your SmartHQ devices will now appear in Home Assistant!
 
 ## Supported Devices
-Based on your current setup, this integration supports:
-- **Smoker** - 31 entities
+
+This integration dynamically creates entities based on your connected appliances:
+
+### Coffee Brewer
+- **Sensors**: Run Status (Off/Active/Complete)
+- **Selects**: Brew Strength (Light/Medium/Bold), Brew Size (10/12/14 Oz, Carafe), Brew Temperature (85-95°C)
+- **Buttons**: Brew Start (with selected settings), Brew Stop
+
+Total: **6 entities**
+
+### Oven
+- **Sensors**: Temperature, Timer, Mode
+- **Numbers**: Temperature/Timer settings
+
+Total: **~4 entities**
+
+### Smoker (Arden)
+- **Sensors**: Probe temperatures, Target temperature, Timer, Cook mode, Signal strength
+- **Switches**: Control Lock, Cavity Light, Smoke control
+- **Selects**: Cooking modes (Brisket, Chicken, Pork, etc.), Temperature units, Cook Target Method (Probe/Timer/Manual)
+- **Numbers**: Target temperature, Timer settings, Smoke level
+- **Buttons**: Send to Smoker
+- **Binary Sensors**: Probe alerts, Low pellet warning
+
+Total: **~31 entities**
+
 <img width="1518" height="810" alt="image" src="https://github.com/user-attachments/assets/07a58a4d-d24f-4909-b4c0-4c3c1f038616" />
-Total: **1 devices, 31 entities**
+
+### Toaster Oven
+- **Sensors**: Status, Timer
+- **Numbers**: Settings
+
+Total: **~6 entities**
 
 ## Features
-- Real-time updates via WebSocket
-- Sensors (temperature, timer, signal strength, etc.)
-- Switches (Control Lock, Cavity Light, Smoke control)
-- Selects (cooking modes)
-- Numbers (temperature/timer settings)
-- Buttons (Send to Smoker commands)
-- Binary Sensors (alerts and warnings)
 
-## Brand icon/logo
-- Submit official SmartHQ icons to Home Assistant **brands** repo.
-  See `BRANDS-PR/` for the required paths:
-    - `custom_integrations/smarthq/icon.png` (256x256, transparent)
-    - `custom_integrations/smarthq/logo.png` (512x512, transparent)
-- Until merged, the UI will show `mdi:washing-machine`.
+### Real-time Updates
+- WebSocket connection for instant device state changes
+- Automatic reconnection on connection loss
+- Snapshot-based state management
 
-## Debug Services
-Available debug services:
+### Entity Types
+- **Sensors**: Monitor device status, temperatures, timers, signal strength
+- **Binary Sensors**: Alerts and warning indicators
+- **Switches**: Control locks, lights, and on/off features
+- **Selects**: Cooking modes, temperature units, brew settings
+- **Numbers**: Adjustable temperature and timer values
+- **Buttons**: Quick action commands (Start brew, Send to Smoker, etc.)
+
+### Coffee Brewer Brewing Control
+The integration stores your brew preferences (Strength, Size, Temperature) and automatically sends them when you press the **Start** button. Settings persist between brews.
+
+### Smoker Advanced Features
+- Multiple probe temperature monitoring
+- Cook Target Method selection (Probe-based, Timer-based, or Manual)
+- Smoke level control
+- Pre-programmed cooking modes for different meats
+
+## Debugging
+
+### Debug Services
 - `smarthq.dump`: Dump cached device data to Home Assistant notifications
-- `smarthq.alert_snapshot`: Show service state snapshots as alerts
+- `smarthq.alert_snapshot`: Show service state snapshots as persistent notifications
+
+### Logging
+Enable debug logging in `configuration.yaml`:
+```yaml
+logger:
+  default: info
+  logs:
+    custom_components.smarthq: debug
+```
+
+## Brand Icon/Logo
+- Official SmartHQ icons can be submitted to Home Assistant **brands** repository
+- See `BRANDS-PR/` folder for required assets:
+  - `custom_integrations/smarthq/icon.png` (256×256, transparent background)
+  - `custom_integrations/smarthq/logo.png` (512×512, transparent background)
+- Until merged, the UI shows the default integration icon
+
+## Troubleshooting
+
+### "Failed to authenticate"
+- Verify your Client ID and Client Secret are correct in Application Credentials
+- Ensure the Callback URL in SmartHQ Developer Portal is exactly: `https://my.home-assistant.io/redirect/oauth`
+- Try removing and re-adding the Application Credentials
+
+### Entities not appearing
+- Check that your devices are online in the SmartHQ mobile app
+- Restart Home Assistant after installation
+- Check logs for any error messages (`Settings` → `System` → `Logs`)
+
+### WebSocket disconnections
+- Integration automatically reconnects on connection loss
+- If persistent, check your internet connection and SmartHQ service status
+
+## Credits
+Based on the SmartHQ Cloud API for GE Appliances connected devices.
