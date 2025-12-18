@@ -60,21 +60,11 @@ Your SmartHQ devices will now appear in Home Assistant!
 ## Supported Devices
 
 This integration dynamically creates entities based on your connected appliances:
+Currently implemented appliances include the Arden Indoor Smoker and the Café Coffee Brewer. 
+Some features may still need improvement. 
+####Contributions are welcome —feel free to add support for appliances you own or help enhance the existing implementations.
 
-### Coffee Brewer
-- **Sensors**: Run Status (Off/Active/Complete)
-- **Selects**: Brew Strength (Light/Medium/Bold), Brew Size (10/12/14 Oz, Carafe), Brew Temperature (85-95°C)
-- **Buttons**: Brew Start (with selected settings), Brew Stop
-
-Total: **6 entities**
-
-### Oven
-- **Sensors**: Temperature, Timer, Mode
-- **Numbers**: Temperature/Timer settings
-
-Total: **~4 entities**
-
-### Smoker (Arden)
+### Indoor Smoker (Arden)
 - **Sensors**: Probe temperatures, Target temperature, Timer, Cook mode, Signal strength
 - **Switches**: Control Lock, Cavity Light, Smoke control
 - **Selects**: Cooking modes (Brisket, Chicken, Pork, etc.), Temperature units, Cook Target Method (Probe/Timer/Manual)
@@ -84,13 +74,17 @@ Total: **~4 entities**
 
 Total: **~31 entities**
 
-<img width="1518" height="810" alt="image" src="https://github.com/user-attachments/assets/07a58a4d-d24f-4909-b4c0-4c3c1f038616" />
+<img width="1492" height="690" alt="image" src="https://github.com/user-attachments/assets/2353d041-47b1-43ef-aa01-206864a775a2" />
 
-### Toaster Oven
-- **Sensors**: Status, Timer
-- **Numbers**: Settings
+### Café Coffee Brewer
+- **Sensors**: Run Status (Off/Active/Complete)
+- **Selects**: Brew Strength (Light/Medium/Bold), Brew Size (10/12/14 Oz, Carafe), Brew Temperature (85-95°C)
+- **Buttons**: Brew Start (with selected settings), Brew Stop
+- **Binary Sensors**: Probe alerts
 
-Total: **~6 entities**
+Total: **18 entities**
+
+<img width="1498" height="533" alt="image" src="https://github.com/user-attachments/assets/7f212918-5ae6-45d4-a5aa-e1e13007736a" />
 
 ## Features
 
