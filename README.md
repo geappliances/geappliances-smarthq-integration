@@ -76,7 +76,7 @@ Your SmartHQ devices will now appear in Home Assistant!
 This integration dynamically creates entities based on your connected appliances:
 Currently implemented appliances include the Arden Indoor Smoker and the Café Coffee Brewer. 
 Some features may still need improvement. 
-####Contributions are welcome —feel free to add support for appliances you own or help enhance the existing implementations.
+**"Contributions are welcome"** —feel free to add support for appliances you own or help enhance the existing implementations.
 
 ### Indoor Smoker (Arden)
 - **Sensors**: Probe temperatures, Target temperature, Timer, Cook mode, Signal strength
