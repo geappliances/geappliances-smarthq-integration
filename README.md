@@ -46,7 +46,7 @@ Before adding the integration, you need to obtain OAuth2 credentials from SmartH
    - Enter your **Client Secret** (OAuth2 Client Secret)
    - Click **"Add"**
 
-<img width="544" height="655" alt="image" src="https://github.com/user-attachments/assets/425033db-7b29-4329-a819-9615b2dd0eca" />
+   <img width="544" height="655" alt="image" src="https://github.com/user-attachments/assets/425033db-7b29-4329-a819-9615b2dd0eca" />
 
 7. If you don't have credentials yet:
    - Follow the **Step1** & **Step2** and complete the app registration steps above
@@ -61,11 +61,11 @@ Before adding the integration, you need to obtain OAuth2 credentials from SmartH
 6. Log in with your SmartHQ account
 7. If you found **"Authorize"** window, Click **"Authorize"** to grant Home Assistant access and click **"Save"**
 
-<img width="742" height="308" alt="image" src="https://github.com/user-attachments/assets/21aff895-9903-45f1-add8-25baea30c9ed" />
+   <img width="742" height="308" alt="image" src="https://github.com/user-attachments/assets/21aff895-9903-45f1-add8-25baea30c9ed" />
 
 8. Click **"Link account"** to complete the setup
 
-<img width="355" height="269" alt="image" src="https://github.com/user-attachments/assets/e7b7b933-7ce2-4fbb-a59f-da79c7d679d3" />
+   <img width="355" height="269" alt="image" src="https://github.com/user-attachments/assets/e7b7b933-7ce2-4fbb-a59f-da79c7d679d3" />
 
 9. Click **"Finish"** when you see the success message
 
