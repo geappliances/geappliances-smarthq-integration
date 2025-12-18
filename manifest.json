@@ -1,13 +1,13 @@
 {
   "domain": "smarthq",
   "name": "SmartHQ",
-  "codeowners": ["@Jaby-Firstbuild"],
+  "codeowners": ["@geappliances"],
   "config_flow": true,
   "dependencies": ["application_credentials"],
-  "documentation": "https://github.com/Jaby-Firstbuild/HA_SmartHQ",
+  "documentation": "https://github.com/geappliances/geappliances-smarthq-integration",
   "integration_type": "hub",
   "iot_class": "cloud_push",
-  "issue_tracker": "https://github.com/Jaby-Firstbuild/HA_SmartHQ/issues",
+  "issue_tracker": "https://github.com/geappliances/geappliances-smarthq-integration/issues",
   "loggers": ["custom_components.smarthq"],
   "requirements": ["aiohttp>=3.8.0"],
   "version": "1.0.0"
