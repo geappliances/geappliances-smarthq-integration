@@ -301,6 +301,8 @@ class SmartHQCoffeeBrewerButton(ButtonEntity):
                     command=command,
                 )
                 _LOGGER.info("[COFFEE_BREW] ✓ %s command sent successfully", self._button_type.upper())
+                # Force state update after command
+                self.async_schedule_update_ha_state(force_refresh=True)
             else:
                 _LOGGER.error("[COFFEE_BREW] API client not available")
                 
@@ -309,6 +311,24 @@ class SmartHQCoffeeBrewerButton(ButtonEntity):
                 "[COFFEE_BREW] ✗ Failed to send %s command: %s",
                 self._button_type, e, exc_info=True
             )
+
+    async def async_added_to_hass(self) -> None:
+        """Register callbacks when entity is added to hass."""
+        from homeassistant.helpers.dispatcher import async_dispatcher_connect
+        from .dispatcher import SIGNAL_DEVICE_UPDATED
+        
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_DEVICE_UPDATED.format(device_id=self._device_id),
+                self._signal_update,
+            )
+        )
+        self._signal_update()
+
+    def _signal_update(self) -> None:
+        """Update button state when device state changes."""
+        self.async_schedule_update_ha_state(force_refresh=True)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities) -> None:
