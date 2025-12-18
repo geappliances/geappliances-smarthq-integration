@@ -1,0 +1,7 @@
+{
+  "name": "SmartHQ",
+  "content_in_root": false,
+  "filename": "smarthq",
+  "country": ["US"],
+  "homeassistant": "2023.9.0"
+}
