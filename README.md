@@ -104,7 +104,9 @@ Total: **18 entities**
 
 ### Real-time Updates
 - WebSocket connection for instant device state changes
-- Automatic reconnection on connection loss
+- Automatic reconnection on connection loss with retry limit (max 3 attempts)
+- Exponential backoff between reconnection attempts (starts at 5 seconds)
+- Persistent notification created when max retries reached
 - Snapshot-based state management
 
 ### Entity Types
@@ -159,8 +161,10 @@ logger:
 - Check logs for any error messages (`Settings` → `System` → `Logs`)
 
 ### WebSocket disconnections
-- Integration automatically reconnects on connection loss
-- If persistent, check your internet connection and SmartHQ service status
+- Integration automatically reconnects on connection loss (up to 3 attempts)
+- Exponential backoff strategy prevents server overload
+- After max retries, a persistent notification alerts you to manually reload the integration
+- Check your internet connection and SmartHQ service status if reconnection fails
 
 ## Credits
 Based on the SmartHQ Cloud API for GE Appliances connected devices.
