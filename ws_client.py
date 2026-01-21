@@ -82,6 +82,9 @@ class SmartHQWebsocket:
         debug_file = "/config/smarthq_ws_debug.log"
         
         backoff = 1
+        consecutive_failures = 0
+        max_retries = 3
+        
         while not self._stopped.is_set():
             try:
                 endpoint = await self._api.async_get_websocket_endpoint()
@@ -91,6 +94,7 @@ class SmartHQWebsocket:
                     self._ws = ws
                     _LOGGER.info("SmartHQ WS connected")
                     backoff = 1
+                    consecutive_failures = 0  # Reset on successful connection
 
                     await self._subscribe_all(ws)
 
@@ -132,7 +136,45 @@ class SmartHQWebsocket:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                _LOGGER.warning("WS error: %s; reconnect in %s sec", e, backoff)
+                consecutive_failures += 1
+                
+                if consecutive_failures >= max_retries:
+                    error_msg = (
+                        f"SmartHQ WebSocket connection failed {consecutive_failures} times.\n\n"
+                        f"Last error: {str(e)}\n\n"
+                        f"Please check:\n"
+                        f"- Internet connection\n"
+                        f"- SmartHQ service status\n"
+                        f"- OAuth2 credentials validity\n\n"
+                        f"The integration will stop attempting to reconnect. "
+                        f"Please restart Home Assistant or reload the SmartHQ integration to retry."
+                    )
+                    
+                    _LOGGER.error(
+                        "SmartHQ WS: Max retry limit (%d) reached. Stopping reconnection attempts. Error: %s",
+                        max_retries, e
+                    )
+                    
+                    # Send persistent notification to Home Assistant UI
+                    try:
+                        await self._hass.services.async_call(
+                            "persistent_notification", "create",
+                            {
+                                "title": "⚠️ SmartHQ Connection Failed",
+                                "message": error_msg,
+                                "notification_id": "smarthq_websocket_failure",
+                            },
+                            blocking=False,
+                        )
+                    except Exception as notification_error:
+                        _LOGGER.error("Failed to create notification: %s", notification_error)
+                    
+                    break  # Stop reconnection loop
+                
+                _LOGGER.warning(
+                    "WS error (attempt %d/%d): %s; reconnect in %s sec",
+                    consecutive_failures, max_retries, e, backoff
+                )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)
             finally:
