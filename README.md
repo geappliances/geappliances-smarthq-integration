@@ -166,5 +166,15 @@ logger:
 - After max retries, a persistent notification alerts you to manually reload the integration
 - Check your internet connection and SmartHQ service status if reconnection fails
 
+## Architecture
+
+For detailed sequence diagrams showing authentication flow, appliance control, and real-time updates, see [SEQUENCE_DIAGRAMS.md](docs/SEQUENCE_DIAGRAMS.md).
+
+**Quick Overview:**
+- **Authentication**: OAuth2 authorization code flow with automatic token refresh
+- **Control**: REST API for sending commands to appliances
+- **Updates**: WebSocket connection for real-time state synchronization
+- **Coordinator**: Centralized data management for all entities
+
 ## Credits
 Based on the SmartHQ Cloud API for GE Appliances connected devices.
