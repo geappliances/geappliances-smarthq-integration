@@ -186,6 +186,7 @@ sequenceDiagram
     participant WS as WebSocket Client
     participant Cloud as SmartHQ Cloud
     participant Coordinator
+    participant HA as Home Assistant
 
     WS->>Cloud: Heartbeat (60s interval)
     Cloud->>WS: Pong
@@ -193,20 +194,29 @@ sequenceDiagram
     Note over WS,Cloud: Connection Lost
     WS->>WS: Detect disconnection
     WS->>Coordinator: Connection status: Disconnected
+    WS->>WS: consecutive_failures = 0
     
-    loop Reconnection attempts
-        WS->>WS: Wait backoff (1s, 2s, 4s...)
+    loop Reconnection attempts (max 3 times)
+        WS->>WS: consecutive_failures += 1
+        WS->>WS: Wait backoff (1s, 2s, 4s, 8s...)
         WS->>Cloud: Get new WebSocket endpoint
         Cloud->>WS: New WebSocket URL
-        WS->>Cloud: Connect
+        WS->>Cloud: Attempt connection
         
         alt Connection successful
             Cloud->>WS: Connected
+            WS->>WS: Reset consecutive_failures = 0
             WS->>WS: Reset backoff = 1s
             WS->>Cloud: Resubscribe to all devices
             WS->>Coordinator: Connection restored
-        else Connection failed
+            Note over WS: Exit reconnection loop
+        else Connection failed AND attempts < 3
             WS->>WS: Increase backoff = min(backoff * 2, 60s)
+            Note over WS: Continue to next attempt
+        else Connection failed AND attempts >= 3
+            WS->>WS: Stop reconnection loop
+            WS->>HA: Create persistent notification<br/>"SmartHQ Connection Failed"<br/>"Please reload integration"
+            Note over WS: Reconnection stopped<br/>Manual intervention required
         end
     end
 ```
