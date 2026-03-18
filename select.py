@@ -308,6 +308,19 @@ class SmartHQCookingModeSelect(SelectEntity):
 
     @property
     def current_option(self) -> Optional[str]:
+        # First check if there's a pending selection
+        bucket = _bucket(self.hass, self._entry)
+        pending_modes = bucket.get("pending_cook_modes", {})
+        device_pending = pending_modes.get(self._device_id, {})
+        pending_token = device_pending.get("mode_token")
+        
+        if pending_token:
+            # Display pending selection
+            if pending_token in self._token_to_name:
+                return self._token_to_name[pending_token]
+            return (pending_token.split(".")[-1].title() if pending_token else None)
+        
+        # Otherwise, display current device state
         token = self._current_token()
         if token and token in self._token_to_name:
             return self._token_to_name[token]
