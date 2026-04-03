@@ -6,7 +6,7 @@ from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN
+from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ class SmartHQSendToSmoker(ButtonEntity):
         self._device_id = did
 
         info = _dev(hass, entry, did).get("info") or {}
-        dn = info.get("nickname") or info.get("name") or "SmartHQ"
+        dn = info.get("nickname") or info.get("name") or DEFAULT_NAME
 
         # Include entry_id to prevent UID conflicts
         self._attr_unique_id = f"{DOMAIN}:{entry.entry_id}:{did}:button:send_to_smoker"
@@ -42,12 +42,12 @@ class SmartHQSendToSmoker(ButtonEntity):
     @property
     def device_info(self):
         info = _dev(self.hass, self._entry, self._device_id).get("info") or {}
-        name = info.get("nickname") or info.get("name") or "SmartHQ"
+        name = info.get("nickname") or info.get("name") or DEFAULT_NAME
         model = info.get("model") or info.get("deviceType") or ""
         sw = info.get("firmwareRevision") or ""
         return {
             "identifiers": {(DOMAIN, self._device_id)},
-            "manufacturer": "GE Appliances",
+            "manufacturer": MANUFACTURER,
             "name": name,
             "model": model,
             "sw_version": sw,
@@ -199,7 +199,7 @@ class SmartHQCoffeeBrewerButton(ButtonEntity):
         self._button_type = button_type  # "start" or "stop"
 
         info = _dev(hass, entry, device_id).get("info") or {}
-        device_name = info.get("nickname") or info.get("name") or "SmartHQ"
+        device_name = info.get("nickname") or info.get("name") or DEFAULT_NAME
 
         self._attr_unique_id = f"{DOMAIN}:{entry.entry_id}:{device_id}:button:brew_{self._button_type}"
         self._attr_name = f"{device_name} Brew {button_type.title()}"
@@ -209,12 +209,12 @@ class SmartHQCoffeeBrewerButton(ButtonEntity):
     @property
     def device_info(self):
         info = _dev(self.hass, self._entry, self._device_id).get("info") or {}
-        name = info.get("nickname") or info.get("name") or "SmartHQ"
+        name = info.get("nickname") or info.get("name") or DEFAULT_NAME
         model = info.get("model") or info.get("deviceType") or ""
         sw = info.get("firmwareRevision") or ""
         return {
             "identifiers": {(DOMAIN, self._device_id)},
-            "manufacturer": "GE Appliances",
+            "manufacturer": MANUFACTURER,
             "name": name,
             "model": model,
             "sw_version": sw,

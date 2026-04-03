@@ -10,7 +10,13 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_entry_oauth2_flow
 
-from .const import DOMAIN
+from .const import (
+    DOMAIN,
+    NOTIFICATION_ID_SNAPSHOT_PREFIX,
+    OAUTH2_AUTHORIZE,
+    OAUTH2_TOKEN,
+    SETTINGS_POLL_INTERVAL_SECONDS,
+)
 from .coordinator import SmartHQCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -61,8 +67,8 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
             DOMAIN,
             client_id="YOUR_CLIENT_ID",  # Replace with actual Client ID
             client_secret="YOUR_CLIENT_SECRET",  # Replace with actual Client Secret
-            authorize_url="https://accounts.brillion.geappliances.com/oauth2/auth",
-            token_url="https://accounts.brillion.geappliances.com/oauth2/token",
+            authorize_url=OAUTH2_AUTHORIZE,
+            token_url=OAUTH2_TOKEN,
         ),
     )
     return True
@@ -161,14 +167,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Optional: provide 'ws' alias for legacy code compatibility
     bucket["ws"] = ws
     
-    # Settings polling task (every 30 seconds)
+    # Settings polling task
     async def _poll_settings():
-        """Poll settings every 30 seconds since WebSocket doesn't update them."""
+        """Poll settings since WebSocket doesn't update them."""
         from .dispatcher import SIGNAL_DEVICE_UPDATED
         from homeassistant.helpers.dispatcher import async_dispatcher_send
         
         while True:
-            await asyncio.sleep(30)
+            await asyncio.sleep(SETTINGS_POLL_INTERVAL_SECONDS)
             try:
                 for device_id in list(store.keys()):
                     try:
@@ -273,7 +279,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 {
                     "title": "SmartHQ Snapshot",
                     "message": msg,
-                    "notification_id": f"smarthq_snapshot_{(target_entry_id or 'none')}_{device_id or 'none'}",
+                    "notification_id": (
+                        f"{NOTIFICATION_ID_SNAPSHOT_PREFIX}_"
+                        f"{(target_entry_id or 'none')}_{device_id or 'none'}"
+                    ),
                 },
                 blocking=False,
             )

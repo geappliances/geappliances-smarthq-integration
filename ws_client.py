@@ -11,12 +11,19 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .api import SmartHQApi
+from .const import (
+    NOTIFICATION_ID_WEBSOCKET_FAILURE,
+    WS_BACKOFF_MAX,
+    WS_DEBUG_LOG_PATH,
+    WS_HEARTBEAT_SECONDS,
+    WS_MAX_RETRIES,
+    WS_RECV_LOG_PATH,
+    WS_RESUBSCRIBE_SECONDS,
+    WS_SUBSCRIBE_SETTLE_SECONDS,
+)
 from .dispatcher import SIGNAL_DEVICE_UPDATED
 
 _LOGGER = logging.getLogger(__name__)
-
-PING_IDLE_SECONDS = 60
-RESUBSCRIBE_SECONDS = 300
 
 
 def _iter_service_items(container: Any) -> Iterable[Dict[str, Any]]:
@@ -78,19 +85,15 @@ class SmartHQWebsocket:
 
     async def _runner(self) -> None:
         """Main WebSocket connection loop with reconnection logic."""
-        # Prepare debug file
-        debug_file = "/config/smarthq_ws_debug.log"
-        
         backoff = 1
         consecutive_failures = 0
-        max_retries = 3
         
         while not self._stopped.is_set():
             try:
                 endpoint = await self._api.async_get_websocket_endpoint()
                 _LOGGER.info("Connecting SmartHQ WS -> %s", endpoint)
 
-                async with self._session.ws_connect(endpoint, heartbeat=PING_IDLE_SECONDS) as ws:
+                async with self._session.ws_connect(endpoint, heartbeat=WS_HEARTBEAT_SECONDS) as ws:
                     self._ws = ws
                     _LOGGER.info("SmartHQ WS connected")
                     backoff = 1
@@ -111,7 +114,7 @@ class SmartHQWebsocket:
                                 
                                 # Save to file
                                 try:
-                                    with open(debug_file, "a") as f:
+                                    with open(WS_DEBUG_LOG_PATH, "a") as f:
                                         f.write(f"\n[{now}] RECV: {json.dumps(payload, indent=2)}\n")
                                 except Exception:
                                     pass
@@ -123,12 +126,12 @@ class SmartHQWebsocket:
                         elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED):
                             raise aiohttp.ClientError(str(msg))
 
-                        if now - last_activity > PING_IDLE_SECONDS:
+                        if now - last_activity > WS_HEARTBEAT_SECONDS:
                             with contextlib.suppress(Exception):
                                 await ws.send_json({"kind": "websocket#ping", "action": "ping"})
                             last_activity = now
 
-                        if now - last_subscribe > RESUBSCRIBE_SECONDS:
+                        if now - last_subscribe > WS_RESUBSCRIBE_SECONDS:
                             with contextlib.suppress(Exception):
                                 await self._subscribe_all(ws)
                             last_subscribe = now
@@ -138,7 +141,7 @@ class SmartHQWebsocket:
             except Exception as e:
                 consecutive_failures += 1
                 
-                if consecutive_failures >= max_retries:
+                if consecutive_failures >= WS_MAX_RETRIES:
                     error_msg = (
                         f"SmartHQ WebSocket connection failed {consecutive_failures} times.\n\n"
                         f"Last error: {str(e)}\n\n"
@@ -152,17 +155,17 @@ class SmartHQWebsocket:
                     
                     _LOGGER.error(
                         "SmartHQ WS: Max retry limit (%d) reached. Stopping reconnection attempts. Error: %s",
-                        max_retries, e
+                        WS_MAX_RETRIES, e
                     )
                     
                     # Send persistent notification to Home Assistant UI
                     try:
-                        await self._hass.services.async_call(
+                        await self.hass.services.async_call(
                             "persistent_notification", "create",
                             {
                                 "title": "⚠️ SmartHQ Connection Failed",
                                 "message": error_msg,
-                                "notification_id": "smarthq_websocket_failure",
+                                "notification_id": NOTIFICATION_ID_WEBSOCKET_FAILURE,
                             },
                             blocking=False,
                         )
@@ -173,10 +176,10 @@ class SmartHQWebsocket:
                 
                 _LOGGER.warning(
                     "WS error (attempt %d/%d): %s; reconnect in %s sec",
-                    consecutive_failures, max_retries, e, backoff
+                    consecutive_failures, WS_MAX_RETRIES, e, backoff
                 )
                 await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 60)
+                backoff = min(backoff * 2, WS_BACKOFF_MAX)
             finally:
                 self._ws = None
 
@@ -193,7 +196,7 @@ class SmartHQWebsocket:
         }
         _LOGGER.info("[SUBSCRIBE] Sending global subscription (FIXED): %s", json.dumps(global_sub, indent=2))
         await ws.send_json(global_sub)
-        await asyncio.sleep(0.5)  # Wait for server response (increased)
+        await asyncio.sleep(WS_SUBSCRIBE_SETTLE_SECONDS)
         
         # Device-specific subscription (page 2 Device Pubsub structure in docs)
         for idx, did in enumerate(self._device_ids, 1):
@@ -213,7 +216,7 @@ class SmartHQWebsocket:
             )
             _LOGGER.debug("[SUBSCRIBE] Device sub payload: %s", json.dumps(device_sub, indent=2))
             await ws.send_json(device_sub)
-            await asyncio.sleep(0.5)  # Wait for server response (increased)
+            await asyncio.sleep(WS_SUBSCRIBE_SETTLE_SECONDS)
         
         _LOGGER.info("[SUBSCRIBE] ✓ All subscriptions sent (%d devices), waiting for ACKs...", len(self._device_ids))
 
@@ -225,7 +228,7 @@ class SmartHQWebsocket:
         # Save to file
         try:
             import time
-            with open("/config/smarthq_ws_debug.log", "a") as f:
+            with open(WS_DEBUG_LOG_PATH, "a") as f:
                 f.write(f"\n[{time.time()}] SEND: {json.dumps(msg, indent=2)}\n")
         except Exception:
             pass
@@ -608,7 +611,7 @@ class SmartHQWebsocket:
             _LOGGER.info("[SMOKE_CMD] Sending: %s", json.dumps(payload, indent=2))
             if self._ws and not self._ws.closed:
                 await self._ws.send_json(payload)
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(WS_SUBSCRIBE_SETTLE_SECONDS)
                 _LOGGER.info("[SMOKE_CMD] ✓ Command sent")
                 return
         except Exception as e:
@@ -730,7 +733,7 @@ class SmartHQWebsocket:
         # ===== Save all received messages to file =====
         try:
             import time
-            with open("/config/smarthq_ws_recv.log", "a") as f:
+            with open(WS_RECV_LOG_PATH, "a") as f:
                 f.write(f"\n{'='*80}\n")
                 f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] kind={kind}\n")
                 f.write(json.dumps(payload, indent=2))

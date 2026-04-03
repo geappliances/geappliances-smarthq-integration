@@ -11,6 +11,7 @@ from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
+    API_BASE,
     DEVICES_URL,
     DEVICE_PRESENCE_URL,
     DEVICE_SETTINGS_URL,
@@ -49,11 +50,15 @@ class SmartHQApi:
         self.hass = hass
         self.entry = entry
         self._oauth: config_entry_oauth2_flow.OAuth2Session | None = None
-        self._base_url = "https://client.mysmarthq.com"  # Add BASE URL
+        self._base_url = API_BASE
+
+    def _api_url(self, path: str) -> str:
+        """Build a URL from the configured client API base."""
+        return f"{self._base_url}{path}"
 
     async def async_get_websocket_endpoint(self) -> str:
         """Return a per-user WebSocket URL (contains access_token)."""
-        url = "https://client.mysmarthq.com/v2/websocket"
+        url = self._api_url("/v2/websocket")
         data = await self._request_json("GET", url)
         ep = (data or {}).get("endpoint")
         if not ep or not isinstance(ep, str):
@@ -278,9 +283,9 @@ class SmartHQApi:
     async def async_get_device_state_snapshot(self, device_id: str) -> Dict[str, Any]:
         """Try a handful of likely device-state endpoints and return first non-empty dict."""
         urls = [
-            f"https://client.mysmarthq.com/v2/device/{device_id}/state",
-            f"https://client.mysmarthq.com/v2/device/{device_id}",
-            f"https://client.mysmarthq.com/v2/device/state?deviceId={device_id}",
+            self._api_url(f"/v2/device/{device_id}/state"),
+            self._api_url(f"/v2/device/{device_id}"),
+            self._api_url(f"/v2/device/state?deviceId={device_id}"),
         ]
         for url in urls:
             try:
@@ -308,9 +313,9 @@ class SmartHQApi:
         """
         # 1) Candidate service list endpoints
         list_urls = [
-            f"https://client.mysmarthq.com/v2/device/{device_id}/service",
-            f"https://client.mysmarthq.com/v2/device/{device_id}/services",
-            f"https://client.mysmarthq.com/v2/service?deviceId={device_id}",
+            self._api_url(f"/v2/device/{device_id}/service"),
+            self._api_url(f"/v2/device/{device_id}/services"),
+            self._api_url(f"/v2/service?deviceId={device_id}"),
         ]
         services: List[Dict[str, Any]] = []
         for url in list_urls:
@@ -343,8 +348,8 @@ class SmartHQApi:
             return ("", {})
         # Candidate state endpoints
         state_urls = [
-            f"https://client.mysmarthq.com/v2/service/{sid}/state",
-            f"https://client.mysmarthq.com/v2/service/{sid}",
+            self._api_url(f"/v2/service/{sid}/state"),
+            self._api_url(f"/v2/service/{sid}"),
         ]
         for su in state_urls:
             try:
@@ -585,7 +590,7 @@ class SmartHQApi:
 
         last_err: Exception | None = None
         for method, url_fmt, variant in attempts:
-            url = "https://client.mysmarthq.com" + url_fmt.format(did=device_id, rid=rule_id)
+            url = self._api_url(url_fmt.format(did=device_id, rid=rule_id))
             body = _body(variant)
             _LOGGER.debug("[API] Trying %s %s with body: %s", method, url, body)
             try:

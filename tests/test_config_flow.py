@@ -6,7 +6,7 @@ from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 
-from custom_components.smarthq.const import DOMAIN
+from custom_components.smarthq.const import DOMAIN, DEFAULT_NAME
 
 
 @pytest.fixture
@@ -38,7 +38,7 @@ async def test_config_flow_abort_if_already_setup(hass: HomeAssistant):
         version=1,
         minor_version=1,
         domain=DOMAIN,
-        title="SmartHQ",
+        title=DEFAULT_NAME,
         data={},
         source=config_entries.SOURCE_USER,
         unique_id="smarthq_oauth",

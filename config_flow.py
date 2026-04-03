@@ -11,6 +11,7 @@ from homeassistant.helpers import config_entry_oauth2_flow
 
 from .const import (
     DOMAIN,
+    DEFAULT_NAME,
     DEFAULT_OPTIONS,
     OPTION_SHOW_ALT_TEMPS,
 )
@@ -55,7 +56,7 @@ class OAuth2FlowHandler(
     async def async_oauth_create_entry(self, data: dict) -> FlowResult:
         """Create the config entry after OAuth finishes."""
         # Include initial options
-        return self.async_create_entry(title="SmartHQ", data=data, options=DEFAULT_OPTIONS)
+        return self.async_create_entry(title=DEFAULT_NAME, data=data, options=DEFAULT_OPTIONS)
 
 
 class SmartHQOptionsFlowHandler(config_entries.OptionsFlow):

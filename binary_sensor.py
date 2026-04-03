@@ -13,7 +13,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import EntityCategory
 
-from .const import DOMAIN
+from .const import DOMAIN, MANUFACTURER
 from .dispatcher import SIGNAL_DEVICE_UPDATED
 
 _LOGGER = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ def _device_info_for(hass: HomeAssistant, entry: ConfigEntry, device_id: str) ->
     return {
         "identifiers": {(DOMAIN, device_id)},
         "name": info.get("nickname") or info.get("model") or device_id[:8],
-        "manufacturer": "GE Appliances",
+        "manufacturer": MANUFACTURER,
         "model": info.get("model"),
     }
 

@@ -7,7 +7,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
-from .const import DOMAIN
+from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME
 from .dispatcher import SIGNAL_DEVICE_UPDATED
 
 _LOGGER = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ def _client(hass: HomeAssistant, entry: ConfigEntry):
 
 def _title(hass: HomeAssistant, entry: ConfigEntry, did: str) -> str:
     info = _dev(hass, entry, did).get("info") or {}
-    return info.get("nickname") or info.get("name") or "SmartHQ"
+    return info.get("nickname") or info.get("name") or DEFAULT_NAME
 
 def _iter_mode_services(hass: HomeAssistant, entry: ConfigEntry, did: str):
     snap = _snap(hass, entry, did) or {}
@@ -179,8 +179,7 @@ class SmartHQModeSelect(SelectEntity):
     def device_info(self):
         """Return device information."""
         info = _dev(self.hass, self._entry, self._device_id).get("info") or {}
-        from .const import MANUFACTURER
-        name = info.get("nickname") or info.get("name") or "SmartHQ"
+        name = info.get("nickname") or info.get("name") or DEFAULT_NAME
         model = info.get("model") or info.get("deviceType") or ""
         sw_version = info.get("firmwareRevision") or ""
         return {
@@ -352,8 +351,7 @@ class SmartHQCookingModeSelect(SelectEntity):
     @property
     def device_info(self):
         info = _dev(self.hass, self._entry, self._device_id).get("info") or {}
-        from .const import MANUFACTURER
-        name = info.get("nickname") or info.get("name") or "SmartHQ"
+        name = info.get("nickname") or info.get("name") or DEFAULT_NAME
         model = info.get("model") or info.get("deviceType") or ""
         sw_version = info.get("firmwareRevision") or ""
         return {
@@ -409,7 +407,7 @@ class SmartHQCoffeeBrewerSelect(SelectEntity):
         self._select_type = select_type
 
         info = _dev(hass, entry, device_id).get("info") or {}
-        device_name = info.get("nickname") or info.get("name") or "SmartHQ"
+        device_name = info.get("nickname") or info.get("name") or DEFAULT_NAME
 
         # Setup based on select type
         if select_type == "strength":
@@ -431,12 +429,12 @@ class SmartHQCoffeeBrewerSelect(SelectEntity):
     @property
     def device_info(self):
         info = _dev(self.hass, self._entry, self._device_id).get("info") or {}
-        name = info.get("nickname") or info.get("name") or "SmartHQ"
+        name = info.get("nickname") or info.get("name") or DEFAULT_NAME
         model = info.get("model") or info.get("deviceType") or ""
         sw = info.get("firmwareRevision") or ""
         return {
             "identifiers": {(DOMAIN, self._device_id)},
-            "manufacturer": "GE Appliances",
+            "manufacturer": MANUFACTURER,
             "name": name,
             "model": model,
             "sw_version": sw,
@@ -543,8 +541,7 @@ class SmartHQCookTargetMethodSelect(SelectEntity):
     @property
     def device_info(self):
         info = _dev(self.hass, self._entry, self._device_id).get("info") or {}
-        from .const import MANUFACTURER
-        name = info.get("nickname") or info.get("name") or "SmartHQ"
+        name = info.get("nickname") or info.get("name") or DEFAULT_NAME
         model = info.get("model") or info.get("deviceType") or ""
         sw_version = info.get("firmwareRevision") or ""
         return {
