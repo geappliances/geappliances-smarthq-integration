@@ -108,15 +108,8 @@ class SmartHQWebsocket:
                             last_activity = now
                             try:
                                 payload = json.loads(msg.data)
-                                
-                                # Save to file
-                                try:
-                                    with open(debug_file, "a") as f:
-                                        f.write(f"\n[{now}] RECV: {json.dumps(payload, indent=2)}\n")
-                                except Exception:
-                                    pass
-                                
-                                _LOGGER.info("[WS_RECV_RAW] %s", json.dumps(payload, indent=2))
+
+                                _LOGGER.debug("[WS_RECV_RAW] %s", json.dumps(payload, indent=2))
                                 await self._on_message(payload)
                             except Exception as e:
                                 _LOGGER.debug("WS message parse error: %s data=%s", e, msg.data)
@@ -221,15 +214,7 @@ class SmartHQWebsocket:
         """Send a message via WebSocket."""
         if not self._ws or self._ws.closed:
             raise RuntimeError("WebSocket is not connected")
-        
-        # Save to file
-        try:
-            import time
-            with open("/config/smarthq_ws_debug.log", "a") as f:
-                f.write(f"\n[{time.time()}] SEND: {json.dumps(msg, indent=2)}\n")
-        except Exception:
-            pass
-        
+
         _LOGGER.debug("[WS_SEND] %s", json.dumps(msg, indent=2))
         await self._ws.send_json(msg)
     
@@ -305,6 +290,55 @@ class SmartHQWebsocket:
             )
         
         return True, ""
+
+    async def async_send_service_command(
+        self,
+        device_id: str,
+        service: dict,
+        command_type: str,
+        command_params: dict | None = None,
+    ) -> None:
+        """Send a generic service command via the REST API.
+
+        Args:
+            device_id:      The target appliance's device ID.
+            service:        The full service object from coordinator data
+                            (must contain serviceType, domainType, serviceDeviceType).
+            command_type:   The commandType string (e.g. "cloud.smarthq.command.toggle.set").
+            command_params: Additional command parameters merged into the command body.
+        """
+        service_type = service.get("serviceType", "")
+        domain_type = service.get("domainType", "")
+        service_device_type = service.get("serviceDeviceType", "")
+
+        if not service_type:
+            raise ValueError("service must contain a non-empty 'serviceType'")
+        if not service_device_type:
+            raise ValueError("service must contain a non-empty 'serviceDeviceType'")
+
+        _LOGGER.info(
+            "[SERVICE_CMD] device=%s serviceType=%s domain=%s commandType=%s params=%s",
+            device_id[:8],
+            service_type,
+            domain_type,
+            command_type,
+            command_params,
+        )
+
+        command: dict = {"commandType": command_type, **(command_params or {})}
+
+        try:
+            await self._api.async_send_command(
+                device_id=device_id,
+                service_type=service_type,
+                domain_type=domain_type,
+                service_device_type=service_device_type,
+                command=command,
+            )
+            _LOGGER.info("[SERVICE_CMD] ✓ Command sent successfully")
+        except Exception as err:
+            _LOGGER.error("[SERVICE_CMD] ✗ Failed: %s", err, exc_info=True)
+            raise
 
     async def async_set_toggle(
         self,
@@ -396,18 +430,23 @@ class SmartHQWebsocket:
             _LOGGER.error("[TOGGLE_CMD] ✗ Failed: %s", e, exc_info=True)
             raise
 
-    async def async_set_cooking_mode(self, device_id: str, service_id: str, mode_token: str, 
-                                     cavity_temp_f: int = None, cook_time_minutes: int = None, 
-                                     probe_temp_f: int = None, smoke_level: int = None) -> None:
+    async def async_set_cooking_mode(self, device_id: str, service_id: str, mode_token: str,
+                                     cavity_temp_f: int = None, cook_time_minutes: int = None,
+                                     probe_temp_f: int = None, smoke_level: int = None,
+                                     auto_keep_warm: bool = None,
+                                     doneness_level: str = None,
+                                     cook_option: str = None,
+                                     numeric_option: int = None) -> None:
         """Send cooking mode command via REST API.
-        
+
         Note: cooking mode command does not use serviceId,
         but directly sets selected cook mode in domainType.
-        Temperature, timer, probe target, smoke level can also be set together.
+        Temperature, timer, probe target, smoke level, auto keep warm,
+        doneness level, option and numeric option can also be set together.
         """
         _LOGGER.info(
-            "[COOKING_MODE_CMD] device=%s mode_domain=%s, temp=%s°F, timer=%smin, probe=%s°F, smoke=%s",
-            device_id[:8], mode_token, cavity_temp_f, cook_time_minutes, probe_temp_f, smoke_level
+            "[COOKING_MODE_CMD] device=%s mode_domain=%s, temp=%s°F, timer=%smin, probe=%s°F, smoke=%s, warm=%s",
+            device_id[:8], mode_token, cavity_temp_f, cook_time_minutes, probe_temp_f, smoke_level, auto_keep_warm
         )
         
         # Check device state
@@ -433,17 +472,75 @@ class SmartHQWebsocket:
         if cook_time_minutes is not None:
             command["cookTimeSeconds"] = cook_time_minutes * 60
         
-        # Add smoke level if provided
-        if smoke_level is not None:
+        # Add smoke level if provided (Smoker-specific; uses numericOptionValue
+        # ONLY when no generic numeric_option is also set).
+        if smoke_level is not None and numeric_option is None:
             command["numericOptionValue"] = smoke_level
-        
+
+        # Add auto keep warm if provided
+        if auto_keep_warm is not None:
+            command["autoKeepWarm"] = auto_keep_warm
+
+        # Add doneness level if provided (cookie, pizza, toast, bagel…)
+        if doneness_level is not None:
+            command["donenessLevel"] = doneness_level
+
+        # Add cook option if provided (cookie freshness, pizza type…)
+        if cook_option is not None:
+            command["option"] = cook_option
+
+        # Add numeric option if provided (slice count, pizza size…).
+        # This wins over smoke_level because they share numericOptionValue.
+        if numeric_option is not None:
+            command["numericOptionValue"] = numeric_option
+
+        # Look up the serviceDeviceType for this mode domain from the stored snapshot.
+        # This is required because different device types (Toaster Oven, Smoker, Oven)
+        # use different serviceDeviceType values in the REST API.
+        # We only look within THIS device's snapshot — never fall back to another device.
+        snap = self._store.get(device_id, {}).get("snapshot", {})
+        service_device_type: str | None = None
+
+        # Pass 1: exact match on domainType == mode_token
+        for svc in (snap.get("services") or {}).values():
+            if not isinstance(svc, dict):
+                continue
+            if svc.get("domainType") == mode_token:
+                sdt = svc.get("serviceDeviceType") or ""
+                if sdt:
+                    service_device_type = sdt
+                break
+
+        # Pass 2: any cooking.mode.v1 service on this device (same device, different domain)
+        if not service_device_type:
+            for svc in (snap.get("services") or {}).values():
+                if not isinstance(svc, dict):
+                    continue
+                if svc.get("serviceType") == "cloud.smarthq.service.cooking.mode.v1":
+                    sdt = svc.get("serviceDeviceType") or ""
+                    if sdt:
+                        service_device_type = sdt
+                        break
+
+        if not service_device_type:
+            _LOGGER.error(
+                "[COOKING_MODE_CMD] Could not determine serviceDeviceType for device=%s "
+                "mode=%s — aborting to avoid sending command to wrong device type",
+                device_id[:8], mode_token,
+            )
+            raise RuntimeError(
+                f"serviceDeviceType unknown for device {device_id[:8]}, mode {mode_token}"
+            )
+
+        _LOGGER.info("[COOKING_MODE_CMD] Using serviceDeviceType=%s", service_device_type)
+
         try:
             # Send via REST API
             await self._api.async_send_command(
                 device_id=device_id,
                 service_type="cloud.smarthq.service.cooking.mode.v1",
                 domain_type=mode_token,
-                service_device_type="cloud.smarthq.device.smoker",
+                service_device_type=service_device_type,
                 command=command,
             )
             
@@ -479,6 +576,21 @@ class SmartHQWebsocket:
         
         _LOGGER.debug("[POWER_OFF_CMD] Using cooking mode: %s", current_mode)
         
+        # Look up serviceDeviceType from this device's snapshot
+        service_device_type: str | None = None
+        for svc in services.values():
+            if not isinstance(svc, dict):
+                continue
+            if svc.get("serviceType") == "cloud.smarthq.service.cooking.mode.v1":
+                sdt = svc.get("serviceDeviceType") or ""
+                if sdt:
+                    service_device_type = sdt
+                    break
+
+        if not service_device_type:
+            _LOGGER.error("[POWER_OFF_CMD] Could not determine serviceDeviceType for device=%s", device_id[:8])
+            raise RuntimeError(f"serviceDeviceType unknown for device {device_id[:8]}")
+
         # Try sending just the command type - let API handle power off
         # Don't include cooking parameters at all
         command = {
@@ -491,7 +603,7 @@ class SmartHQWebsocket:
                 device_id=device_id,
                 service_type="cloud.smarthq.service.cooking.mode.v1",
                 domain_type=current_mode,
-                service_device_type="cloud.smarthq.device.smoker",
+                service_device_type=service_device_type,
                 command=command,
             )
             
@@ -583,10 +695,332 @@ class SmartHQWebsocket:
             _LOGGER.error("[MODE_CMD] ✗ Failed: %s", e, exc_info=True)
             raise
 
+    async def async_set_laundry_mode(
+        self, device_id: str, service_id: str, domain_token: str
+    ) -> None:
+        """Send cloud.smarthq.command.laundry.mode.v1.set via REST API.
+
+        Args:
+            device_id:    Device ID string
+            service_id:   The specific laundry.mode.v1 service ID for this domain
+            domain_token: The full domain type token (e.g. cloud.smarthq.domain.laundry.jeans)
+        """
+        _LOGGER.info(
+            "[LAUNDRY_MODE] device=%s service=%s -> domain=%s",
+            device_id[:8], service_id[:8], domain_token,
+        )
+
+        service_meta = self._get_service_metadata(device_id, service_id)
+        service_type = service_meta.get("serviceType") or "cloud.smarthq.service.laundry.mode.v1"
+        service_device_type = service_meta.get("serviceDeviceType") or ""
+        domain_type = service_meta.get("domainType") or domain_token
+
+        if not service_device_type:
+            _LOGGER.error("[LAUNDRY_MODE] serviceDeviceType missing for service %s", service_id[:8])
+            raise ValueError("serviceDeviceType cannot be empty for laundry mode command")
+
+        command = {
+            "commandType": "cloud.smarthq.command.laundry.mode.v1.set",
+        }
+
+        try:
+            await self._api.async_send_command(
+                device_id=device_id,
+                service_type=service_type,
+                domain_type=domain_type,
+                service_device_type=service_device_type,
+                command=command,
+            )
+            _LOGGER.info("[LAUNDRY_MODE] ✓ Command sent successfully")
+        except Exception as e:
+            _LOGGER.error("[LAUNDRY_MODE] ✗ Failed: %s", e, exc_info=True)
+            raise
+
+    async def async_set_laundry_toggle_v2(
+        self, device_id: str, service_id: str, on: bool
+    ) -> None:
+        """Send cloud.smarthq.command.laundry.toggle.v2.set via REST API."""
+        _LOGGER.info(
+            "[LAUNDRY_TOGGLE_V2] device=%s service=%s -> on=%s",
+            device_id[:8], service_id[:8], on,
+        )
+        service_meta = self._get_service_metadata(device_id, service_id)
+        service_type = service_meta.get("serviceType") or "cloud.smarthq.service.laundry.toggle.v2"
+        service_device_type = service_meta.get("serviceDeviceType") or ""
+        domain_type = service_meta.get("domainType") or ""
+
+        if not service_device_type:
+            raise ValueError("serviceDeviceType cannot be empty for laundry.toggle.v2 command")
+
+        command = {
+            "commandType": "cloud.smarthq.command.laundry.toggle.v2.set",
+            "on": on,
+        }
+
+        try:
+            await self._api.async_send_command(
+                device_id=device_id,
+                service_type=service_type,
+                domain_type=domain_type,
+                service_device_type=service_device_type,
+                command=command,
+            )
+            _LOGGER.info("[LAUNDRY_TOGGLE_V2] ✓ Command sent successfully")
+        except Exception as e:
+            _LOGGER.error("[LAUNDRY_TOGGLE_V2] ✗ Failed: %s", e, exc_info=True)
+            raise
+
+    async def async_set_dishwasher_mode(
+        self, device_id: str, service_id: str, domain_token: str
+    ) -> None:
+        """Send cloud.smarthq.command.dishwasher.mode.v1.set via REST API."""
+        _LOGGER.info(
+            "[DISHWASHER_MODE] device=%s service=%s -> domain=%s",
+            device_id[:8], service_id[:8], domain_token,
+        )
+        service_meta = self._get_service_metadata(device_id, service_id)
+        service_type = service_meta.get("serviceType") or "cloud.smarthq.service.dishwasher.mode.v1"
+        service_device_type = service_meta.get("serviceDeviceType") or ""
+        domain_type = service_meta.get("domainType") or domain_token
+
+        if not service_device_type:
+            raise ValueError("serviceDeviceType cannot be empty for dishwasher mode command")
+
+        command = {"commandType": "cloud.smarthq.command.dishwasher.mode.v1.set"}
+        try:
+            await self._api.async_send_command(
+                device_id=device_id,
+                service_type=service_type,
+                domain_type=domain_type,
+                service_device_type=service_device_type,
+                command=command,
+            )
+            _LOGGER.info("[DISHWASHER_MODE] ✓ Command sent successfully")
+        except Exception as e:
+            _LOGGER.error("[DISHWASHER_MODE] ✗ Failed: %s", e, exc_info=True)
+            raise
+
+    async def async_dishwasher_state_command(
+        self, device_id: str, service_id: str, command_type: str
+    ) -> None:
+        """Send dishwasher.state.v1 start/stop/pause command via REST API."""
+        _LOGGER.info(
+            "[DISHWASHER_STATE] device=%s service=%s -> %s",
+            device_id[:8], service_id[:8], command_type,
+        )
+        service_meta = self._get_service_metadata(device_id, service_id)
+        service_type = service_meta.get("serviceType") or "cloud.smarthq.service.dishwasher.state.v1"
+        service_device_type = service_meta.get("serviceDeviceType") or ""
+        domain_type = service_meta.get("domainType") or ""
+
+        if not service_device_type:
+            raise ValueError("serviceDeviceType cannot be empty for dishwasher state command")
+
+        command = {"commandType": command_type}
+        try:
+            await self._api.async_send_command(
+                device_id=device_id,
+                service_type=service_type,
+                domain_type=domain_type,
+                service_device_type=service_device_type,
+                command=command,
+            )
+            _LOGGER.info("[DISHWASHER_STATE] ✓ %s sent successfully", command_type)
+        except Exception as e:
+            _LOGGER.error("[DISHWASHER_STATE] ✗ Failed: %s", e, exc_info=True)
+            raise
+
+    async def async_advantium_command(
+        self, device_id: str, service_id: str, command_type: str
+    ) -> None:
+        """Send cooking.advantium start/stop/pause/resume command via REST API."""
+        _LOGGER.info(
+            "[ADVANTIUM] device=%s service=%s -> %s",
+            device_id[:8], service_id[:8], command_type,
+        )
+        service_meta = self._get_service_metadata(device_id, service_id)
+        service_type = service_meta.get("serviceType") or "cloud.smarthq.service.cooking.advantium"
+        service_device_type = service_meta.get("serviceDeviceType") or ""
+        domain_type = service_meta.get("domainType") or ""
+
+        command = {"commandType": command_type}
+        try:
+            await self._api.async_send_command(
+                device_id=device_id,
+                service_type=service_type,
+                domain_type=domain_type,
+                service_device_type=service_device_type,
+                command=command,
+            )
+            _LOGGER.info("[ADVANTIUM] ✓ %s sent successfully", command_type)
+        except Exception as e:
+            _LOGGER.error("[ADVANTIUM] ✗ Failed: %s", e, exc_info=True)
+            raise
+
+    async def async_set_generic_mode(
+        self,
+        device_id: str,
+        service_id: str,
+        command_type: str,
+        mode_token: str,
+        extra_params: dict | None = None,
+    ) -> None:
+        """Send a generic mode set command (flexdispense, stainremoval, etc.)."""
+        _LOGGER.info(
+            "[GENERIC_MODE] device=%s service=%s cmd=%s mode=%s",
+            device_id[:8], service_id[:8], command_type, mode_token,
+        )
+        service_meta = self._get_service_metadata(device_id, service_id)
+        service_type = service_meta.get("serviceType") or ""
+        service_device_type = service_meta.get("serviceDeviceType") or ""
+        domain_type = service_meta.get("domainType") or ""
+
+        command: dict = {"commandType": command_type, "mode": mode_token}
+        if extra_params:
+            command.update(extra_params)
+
+        try:
+            await self._api.async_send_command(
+                device_id=device_id,
+                service_type=service_type,
+                domain_type=domain_type,
+                service_device_type=service_device_type,
+                command=command,
+            )
+            _LOGGER.info("[GENERIC_MODE] ✓ Command sent successfully")
+        except Exception as e:
+            _LOGGER.error("[GENERIC_MODE] ✗ Failed: %s", e, exc_info=True)
+            raise
+
+    async def async_set_thermostat(
+        self,
+        device_id: str,
+        service_id: str,
+        **params,
+    ) -> None:
+        """Send thermostat.v1.set command — pass kwargs as command fields (mode, on, fanSpeed, coolFahrenheit, etc.)."""
+        _LOGGER.info("[THERMOSTAT] device=%s service=%s params=%s", device_id[:8], service_id[:8], params)
+        service_meta = self._get_service_metadata(device_id, service_id)
+        service_type = service_meta.get("serviceType") or "cloud.smarthq.service.thermostat.v1"
+        service_device_type = service_meta.get("serviceDeviceType") or ""
+        domain_type = service_meta.get("domainType") or ""
+
+        command: dict = {"commandType": "cloud.smarthq.command.thermostat.v1.set"}
+        command.update(params)
+        try:
+            await self._api.async_send_command(
+                device_id=device_id,
+                service_type=service_type,
+                domain_type=domain_type,
+                service_device_type=service_device_type,
+                command=command,
+            )
+            _LOGGER.info("[THERMOSTAT] ✓ Command sent successfully")
+        except Exception as e:
+            _LOGGER.error("[THERMOSTAT] ✗ Failed: %s", e, exc_info=True)
+            raise
+
+    async def async_set_waterheater(
+        self,
+        device_id: str,
+        service_id: str,
+        **params,
+    ) -> None:
+        """Send waterheater.v1.set command — pass kwargs as command fields (mode, setpointFahrenheit, capacity)."""
+        _LOGGER.info("[WATERHEATER] device=%s service=%s params=%s", device_id[:8], service_id[:8], params)
+        service_meta = self._get_service_metadata(device_id, service_id)
+        service_type = service_meta.get("serviceType") or "cloud.smarthq.service.waterheater.v1"
+        service_device_type = service_meta.get("serviceDeviceType") or ""
+        domain_type = service_meta.get("domainType") or ""
+
+        command: dict = {"commandType": "cloud.smarthq.command.waterheater.v1.set"}
+        command.update(params)
+        try:
+            await self._api.async_send_command(
+                device_id=device_id,
+                service_type=service_type,
+                domain_type=domain_type,
+                service_device_type=service_device_type,
+                command=command,
+            )
+            _LOGGER.info("[WATERHEATER] ✓ Command sent successfully")
+        except Exception as e:
+            _LOGGER.error("[WATERHEATER] ✗ Failed: %s", e, exc_info=True)
+            raise
+
+    async def async_set_color(
+        self,
+        device_id: str,
+        service_id: str,
+        **params,
+    ) -> None:
+        """Send color.set command.
+
+        Accepted kwargs (at least one required):
+          rgb="#RRGGBB"                         — RGB hex string
+          hsb={"hue": 0, "saturation": 0.5, "brightness": 0.5}
+          whitenessTemperatureKelvin=3100
+          red, green, blue, intensity           — individual RGB+intensity components
+        """
+        _LOGGER.info("[COLOR] device=%s service=%s params=%s", device_id[:8], service_id[:8], params)
+        service_meta = self._get_service_metadata(device_id, service_id)
+        service_type = service_meta.get("serviceType") or "cloud.smarthq.service.color"
+        domain_type = service_meta.get("domainType") or ""
+        service_device_type = service_meta.get("serviceDeviceType") or ""
+
+        command: dict = {"commandType": "cloud.smarthq.command.color.set"}
+        command.update(params)
+        try:
+            await self._api.async_send_command(
+                device_id=device_id,
+                service_type=service_type,
+                domain_type=domain_type,
+                service_device_type=service_device_type,
+                command=command,
+            )
+            _LOGGER.info("[COLOR] ✓ Command sent successfully")
+        except Exception as e:
+            _LOGGER.error("[COLOR] ✗ Failed: %s", e, exc_info=True)
+            raise
+
+    async def async_set_accent_light(
+        self,
+        device_id: str,
+        service_id: str,
+        **params,
+    ) -> None:
+        """Send cooking.prorange.accent.light.set command.
+
+        Accepted kwargs (all optional):
+          brightness       : int (0-100)
+          colorTemperature : int (Kelvin)
+          customColorActive: bool
+          customColorCode  : str
+        """
+        _LOGGER.info("[ACCENT_LIGHT] device=%s service=%s params=%s", device_id[:8], service_id[:8], params)
+        service_meta = self._get_service_metadata(device_id, service_id)
+        service_type = service_meta.get("serviceType") or "cloud.smarthq.service.cooking.prorange.accent.light"
+        domain_type = service_meta.get("domainType") or ""
+        service_device_type = service_meta.get("serviceDeviceType") or ""
+
+        command: dict = {"commandType": "cloud.smarthq.command.cooking.prorange.accent.light.set"}
+        command.update(params)
+        try:
+            await self._api.async_send_command(
+                device_id=device_id,
+                service_type=service_type,
+                domain_type=domain_type,
+                service_device_type=service_device_type,
+                command=command,
+            )
+            _LOGGER.info("[ACCENT_LIGHT] ✓ Command sent successfully")
+        except Exception as e:
+            _LOGGER.error("[ACCENT_LIGHT] ✗ Failed: %s", e, exc_info=True)
+            raise
+
     async def async_set_smoke_level(self, device_id: str, service_id: str, level: int) -> None:
         """Send smoke level command using official format."""
-        _LOGGER.info("[SMOKE_CMD] device=%s service=%s -> level=%s", device_id[:8], service_id[:8], level)
-        
+        _LOGGER.info("[SMOKE_CMD] device=%s service=%s -> level=%s", device_id[:8], service_id[:8], level)        
         service_meta = self._get_service_metadata(device_id, service_id)
         service_type = service_meta.get("serviceType", "cloud.smarthq.service.integer")
         domain_type = service_meta.get("domainType", "")
@@ -726,21 +1160,9 @@ class SmartHQWebsocket:
     async def _on_message(self, payload: Dict[str, Any]) -> None:
         """Apply events to store and notify entities."""
         kind = str(payload.get("kind") or "")
-        
-        # ===== Save all received messages to file =====
-        try:
-            import time
-            with open("/config/smarthq_ws_recv.log", "a") as f:
-                f.write(f"\n{'='*80}\n")
-                f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] kind={kind}\n")
-                f.write(json.dumps(payload, indent=2))
-                f.write(f"\n{'='*80}\n")
-        except Exception as e:
-            _LOGGER.debug("Failed to write to log file: %s", e)
-        # ===========================================
-        
+
         # ===== Log kind of all messages =====
-        _LOGGER.info("[WS_RECV] kind=%s, keys=%s", kind, list(payload.keys()))
+        _LOGGER.debug("[WS_RECV] kind=%s, keys=%s", kind, list(payload.keys()))
         # ==================================
         
         # Handle subscription confirmation (ACK) - websocket#pubsub with success
@@ -899,6 +1321,17 @@ class SmartHQWebsocket:
                 
                 _LOGGER.info("[ALERT] %s: %s (active=%s)", did[:8], alert_type, not is_clear)
                 async_dispatcher_send(self.hass, SIGNAL_DEVICE_UPDATED.format(device_id=did))
+
+                # Publish to HA Event Bus so automations can react
+                self.hass.bus.async_fire(
+                    "smarthq_alert",
+                    {
+                        "device_id": did,
+                        "alert_type": alert_type,
+                        "active": not is_clear,
+                        "data": body,
+                    },
+                )
                 return
 
         # Handle presence

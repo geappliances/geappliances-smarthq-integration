@@ -15,8 +15,7 @@ from .coordinator import SmartHQCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-# LIGHT platform removed (switch handles lights)
-PLATFORMS = ["sensor", "number", "switch", "binary_sensor", "select", "button"]
+PLATFORMS = ["sensor", "number", "switch", "binary_sensor", "select", "button", "climate", "water_heater", "light", "text"]
 
 async def _maybe_await(x):
     """Await if x is a coroutine, else return as-is."""
@@ -194,7 +193,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             except Exception as e:
                 _LOGGER.error("[SETTINGS_POLL] Error: %s", e)
     
-    polling_task = hass.async_create_task(_poll_settings())
+    polling_task = entry.async_create_background_task(
+        hass, _poll_settings(), "smarthq_settings_poll"
+    )
     bucket["settings_polling_task"] = polling_task
 
     # Register debug dump service
@@ -208,7 +209,101 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.warning("[DUMP_ALL] %s", store)
 
     hass.services.async_register(DOMAIN, "dump", _async_dump_service)
-    
+
+    # ----- Device Diagnosis Service -----
+    async def _async_diagnose_device(call):
+        """Dump all services + state keys for a device as a persistent notification.
+
+        Usage: smarthq.diagnose  data: {device_id: "<full-device-id>"}
+        Omit device_id to list all known device IDs.
+        """
+        target_did = call.data.get("device_id")
+        cur_store = bucket.get("store") or {}
+
+        if not target_did:
+            # Just list device IDs + nicknames
+            lines = []
+            for did, dev in cur_store.items():
+                nick = (dev.get("info") or {}).get("nickname") or "?"
+                svc_count = len((dev.get("snapshot") or {}).get("services") or {})
+                lines.append(f"- {did}\n  nickname={nick}  services={svc_count}")
+            msg = "Known devices:\n" + ("\n".join(lines) if lines else "  (none)")
+            await hass.services.async_call(
+                "persistent_notification", "create",
+                {"title": "SmartHQ Diagnose – Device List", "message": msg,
+                 "notification_id": "smarthq_diagnose_list"},
+                blocking=False,
+            )
+            return
+
+        dev = cur_store.get(target_did)
+        if not dev:
+            await hass.services.async_call(
+                "persistent_notification", "create",
+                {"title": "SmartHQ Diagnose – Not Found",
+                 "message": f"device_id not in store:\n{target_did}",
+                 "notification_id": "smarthq_diagnose_notfound"},
+                blocking=False,
+            )
+            return
+
+        snap = dev.get("snapshot") or {}
+        services = snap.get("services") or {}
+        lines = []
+
+        # ── Coordinator raw item structure ──────────────────────────────────
+        coord = bucket.get("coordinator")
+        coord_item = {}
+        if coord and coord.data:
+            coord_device = coord.data.get(target_did) or {}
+            coord_item = coord_device.get("item") or {}
+        coord_top_keys = list(coord_item.keys()) if coord_item else []
+        coord_svcs_raw = coord_item.get("services") if coord_item else None
+        coord_svc_count = len(coord_svcs_raw) if isinstance(coord_svcs_raw, (list, dict)) else "N/A"
+        first_svc_keys = list(coord_svcs_raw[0].keys()) if isinstance(coord_svcs_raw, list) and coord_svcs_raw else "N/A"
+        lines.append(
+            f"[COORDINATOR RAW ITEM]"
+            f"  item_top_keys={coord_top_keys}"
+            f"  services_type={type(coord_svcs_raw).__name__}"
+            f"  services_count={coord_svc_count}"
+            f"  first_svc_keys={first_svc_keys}\n"
+        )
+        lines.append("---\n")
+
+        for sid, st in services.items():
+            if not isinstance(st, dict):
+                continue
+            stype = st.get("serviceType") or ""
+            dom   = st.get("domainType") or ""
+            # Collect all state keys (exclude metadata keys)
+            meta = {"serviceType", "domainType", "serviceDeviceType", "label",
+                    "name", "config", "disabled"}
+            state_keys = {k: v for k, v in st.items() if k not in meta}
+            lines.append(
+                f"[{sid[:12]}]\n"
+                f"  type   : {stype}\n"
+                f"  domain : {dom}\n"
+                f"  state  : {state_keys}\n"
+            )
+
+        nick = (dev.get("info") or {}).get("nickname") or "?"
+        msg = (
+            f"device: {target_did[:16]}…\n"
+            f"nickname: {nick}\n"
+            f"services: {len(services)}\n\n"
+            + ("\n".join(lines) if lines else "  (no services)")
+        )
+        await hass.services.async_call(
+            "persistent_notification", "create",
+            {"title": f"SmartHQ Diagnose – {nick}",
+             "message": msg,
+             "notification_id": f"smarthq_diagnose_{target_did[:16]}"},
+            blocking=False,
+        )
+
+    hass.services.async_register(DOMAIN, "diagnose", _async_diagnose_device)
+    # ----- end Device Diagnosis -----
+
     # ----- Snapshot Debug Services -----
     root = hass.data.setdefault(DOMAIN, {})
     if not root.get("_services_registered"):
