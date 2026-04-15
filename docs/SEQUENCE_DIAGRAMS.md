@@ -132,76 +132,35 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant HA as Home Assistant
-    participant Init as async_setup_entry
-    participant Coord as SmartHQCoordinator
+    participant Coord as Coordinator
     participant API as SmartHQ API
-    participant Store as In-Memory Store
     participant Platforms as Entity Platforms
     participant WS as WebSocket Client
-    participant Poll as Settings Poll Task
 
-    Note over HA,Poll: Integration bootstrap (runs once at startup)
+    Note over HA,WS: Boot (runs once)
 
-    HA->>Init: async_setup_entry()
-    Init->>API: Create SmartHQApi (OAuth2 session)
-    Init->>Coord: Create SmartHQCoordinator (no polling schedule)
-    Init->>Coord: async_config_entry_first_refresh()
-
-    Coord->>API: GET /v2/appliance (device list)
-    API->>Coord: [device_id, ...]
-
-    loop For each device_id
-        Coord->>API: GET /v2/device/{did}
-        API->>Coord: item (includes services[] array)
-        Coord->>API: GET /v2/device/{did}/setting/*
-        API->>Coord: settings[] (BOOLEAN + other types)
+    HA->>Coord: async_config_entry_first_refresh()
+    Coord->>API: GET /v2/appliance → device list
+    loop For each device
+        Coord->>API: GET /v2/device/{did} → services[]
+        Coord->>API: GET /v2/device/{did}/setting/* → settings[]
     end
+    Coord->>HA: coord.data ready
 
-    Coord->>Init: coord.data = {did: {item, settings, ...}}
+    HA->>Platforms: async_forward_entry_setups()
+    Platforms->>Platforms: services[] → entity per serviceType
+    Platforms->>Platforms: settings[] BOOLEAN → SmartHQSettingSwitch
+    Platforms->>HA: All entities registered
 
-    Note over Init,Store: Reflect coordinator data into runtime store
-    Init->>Store: For each did — build services{}, settings[], snapshot{}
-    Init->>Store: store[did] = {info, presence, settings, snapshot}
+    HA->>WS: Connect & subscribe all devices
+    HA->>HA: Start 30 s settings poll task
 
-    Note over Init,Platforms: Platform entity creation
-    Init->>Platforms: async_forward_entry_setups(ALL_PLATFORMS)
-
-    loop For each platform (sensor, switch, climate, ...)
-        Platforms->>Store: Read coord.data[did]["item"]["services"]
-        loop For each service in services[]
-            Platforms->>Platforms: Match serviceType to entity class
-            Platforms->>HA: Register entity
-        end
-        Platforms->>Store: Read coord.data[did]["settings"]
-        loop For each BOOLEAN setting
-            Platforms->>HA: Register SmartHQSettingSwitch
-        end
-    end
-
-    Note over Init,WS: Start real-time WebSocket
-    Init->>WS: SmartHQWebsocket(device_ids=[...])
-    WS->>API: GET WebSocket endpoint URL
-    API->>WS: wss://... URL
-    WS->>API: Connect WebSocket
-    loop For each device_id
-        WS->>API: Subscribe to device updates
-    end
-    WS->>Init: WS running
-
-    Note over Init,Poll: Start settings background poll
-    Init->>Poll: async_create_background_task(_poll_settings)
-    Poll->>Poll: Loop every 30 s
-    Poll->>API: GET /v2/device/{did}/setting/* (per device)
-    API->>Poll: settings[]
-    Poll->>Store: store[did]["settings"] = updated
-    Poll->>HA: SIGNAL_DEVICE_UPDATED (if changed)
-
-    Note over HA,Poll: Ready — WS pushes + 30 s settings poll running
+    Note over HA,WS: Ready — WS push (services) + poll (settings)
 ```
 
 **Key Points:**
 - `SmartHQCoordinator` runs **once at boot** — no periodic polling schedule
-- Entity creation is driven by the `services[]` array returned from `GET /v2/device/{did}`; each `serviceType` maps to a specific entity class
+- Entity creation is driven by the `services[]` array; each `serviceType` maps to a specific entity class
 - `SmartHQSettingSwitch` entities are created from the `settings[]` array (BOOLEAN type only)
 - After boot, state updates flow via WebSocket (service entities) or the 30 s settings poll (setting switches)
 
