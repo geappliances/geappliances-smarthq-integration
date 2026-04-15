@@ -1,6 +1,9 @@
 # SmartHQ Integration Sequence Diagrams
 
-This document provides high-level sequence diagrams for the SmartHQ Home Assistant integration. For detailed technical flows, see the [Appendix](#appendix).
+This document provides high-level sequence diagrams for the SmartHQ Home Assistant
+integration. For detailed technical flows, see the [Appendix](#appendix).
+
+---
 
 ## 1. Authentication Flow
 
@@ -37,31 +40,36 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant User
-    participant HA as Home Assistant Entity
-    participant Coordinator
-    participant API as SmartHQ API
+    participant Entity as HA Entity
     participant WS as WebSocket Client
+    participant API as SmartHQ API (REST)
     participant Cloud as SmartHQ Cloud
     participant Appliance
 
-    Note over User,Appliance: Control Command
-    User->>HA: Turn on/Set temperature
-    HA->>API: Send command (REST API)
-    API->>Cloud: Forward command
+    Note over User,Appliance: Path A — Service-based Control (e.g. temperature, mode, cook time)
+    User->>Entity: Set value / press button
+    Entity->>WS: async_send_service_command()
+    WS->>Cloud: WebSocket command message
     Cloud->>Appliance: Execute command
-    
-    Note over User,Appliance: Real-time State Update
     Appliance->>Cloud: State changed
-    Cloud->>WS: WebSocket message
-    WS->>Coordinator: Parse & update
-    Coordinator->>HA: Update entities
-    HA->>User: UI updates automatically
+    Cloud->>WS: WebSocket push update
+    WS->>WS: Update store[device_id].services
+    WS->>Entity: SIGNAL_DEVICE_UPDATED dispatch
+    Entity->>User: UI reflects new state
+
+    Note over User,Appliance: Path B — Settings-based Control (e.g. alert/notification toggles)
+    User->>Entity: Toggle switch (SmartHQSettingSwitch)
+    Entity->>API: PATCH /v2/device/{did}/setting/{key}
+    API->>Cloud: Apply setting
+    Entity->>Entity: _update_store() optimistic update
+    Entity->>User: UI reflects new state immediately
+    Note over Entity,API: Next 30 s poll confirms actual value
 ```
 
 **Key Points:**
-- Commands sent via REST API
-- State updates received via WebSocket for real-time sync
-- Coordinator manages data flow and entity updates
+- **Service entities** (climate, select, number, button, sensor): commands go via WebSocket; state updates arrive via WebSocket push
+- **Settings entities** (SmartHQSettingSwitch): writes go via REST API; state is refreshed every 30 seconds by background polling task
+- No coordinator involvement at runtime — coordinator is boot-only
 
 ---
 
@@ -70,37 +78,52 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant User
-    participant HA as Home Assistant
-    participant Smoker as Smoker Appliance
-    participant Probe as Temperature Probe
+    participant Select as CookingMode Select
+    participant Button as Send to Smoker Button
+    participant Climate as Climate Entity
+    participant WS as WebSocket Client
+    participant Smoke as Smoker Appliance
 
-    User->>HA: Set target temp to 225°F
-    HA->>Smoker: Update temperature setting
-    Smoker->>HA: Confirm setting updated
-    
-    loop Every state update
-        Probe->>Smoker: Current temp reading
-        Smoker->>HA: WebSocket update
-        HA->>User: Display current: 180°F
+    Note over User,Smoke: Start a cook session
+    User->>Select: Choose cooking mode (e.g. "Smoke")
+    Select->>Select: Store pending mode (optimistic)
+    User->>Climate: Set target temperature (e.g. 225 F)
+    User->>Button: Press "Send to Smoker"
+    Button->>WS: async_set_cooking_mode(mode, temp, cook_time)
+    WS->>Smoke: WebSocket command (mode + setpoint)
+    Smoke->>WS: WebSocket push — state updated
+    WS->>WS: Update store[did].services
+    WS->>Select: SIGNAL_DEVICE_UPDATED
+    WS->>Climate: SIGNAL_DEVICE_UPDATED
+    Select->>User: Show active mode
+    Climate->>User: Show current / target temp
+
+    Note over User,Smoke: Real-time monitoring
+    loop Every WebSocket push
+        Smoke->>WS: Probe temps, cook time, smoke level
+        WS->>WS: Update store[did].services
+        WS->>Climate: Dispatch update
+        Climate->>User: Current temp / probe 1-4
     end
-    
-    Note over Smoker: Target reached
-    Smoker->>HA: Temp: 225°F, Status: Active
-    HA->>User: Temperature reached notification
-    
-    User->>HA: Check probe temperature
-    HA->>User: Display probe: 165°F
-    
-    User->>HA: Turn off smoker
-    HA->>Smoker: Power off command
-    Smoker->>HA: Confirm powered off
+
+    Note over User,Smoke: Alert / notification settings
+    User->>User: Toggle "Probe Alert" switch
+    User->>WS: SmartHQSettingSwitch.async_turn_on()
+    WS->>WS: REST API PATCH setting
+    Note over WS: Confirmed by next 30 s poll
 ```
 
-**Entities Created for Smoker:**
-- **Climate Entity**: Target temperature, current temperature, operating mode
-- **Sensor Entities**: Probe temperatures, cook time
-- **Binary Sensor**: Smoke level, power status
-- **Switch**: Remote enable/disable
+**Service-Based Entities Created for Smoker:**
+
+| Entity Type | Source | Example |
+|-------------|--------|---------|
+| `climate` | cooking service (setpoint/currentTemp) | Smoker temperature |
+| `select` | cooking mode service | Cooking mode (Smoke / Grill / …) |
+| `number` | cook time service | Cook time (minutes) |
+| `button` | send command service | Send to Smoker |
+| `sensor` | probe / cook time services | Probe 1–4 temps, cook time remaining |
+| `binary_sensor` | smoke level service | Smoke level active |
+| `switch` (Settings) | REST BOOLEAN settings | Probe alert, door alert, … |
 
 ---
 
@@ -109,40 +132,78 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant HA as Home Assistant
-    participant Coordinator
+    participant Init as async_setup_entry
+    participant Coord as SmartHQCoordinator
     participant API as SmartHQ API
+    participant Store as In-Memory Store
+    participant Platforms as Entity Platforms
     participant WS as WebSocket Client
-    participant Cloud as SmartHQ Cloud
+    participant Poll as Settings Poll Task
 
-    Note over HA,Cloud: Integration Startup
-    HA->>Coordinator: Initialize
-    Coordinator->>API: Get device list
-    API->>Cloud: Fetch registered appliances
-    Cloud->>API: Return device info
-    API->>Coordinator: Devices data
-    
-    Coordinator->>Coordinator: Analyze device types
-    Coordinator->>HA: Create entities<br/>(sensor, switch, climate, etc.)
-    
-    Coordinator->>WS: Connect to WebSocket
-    WS->>Cloud: Establish connection
-    Cloud->>WS: Connection established
-    
-    loop For each device
-        WS->>Cloud: Subscribe to device updates
+    Note over HA,Poll: Integration bootstrap (runs once at startup)
+
+    HA->>Init: async_setup_entry()
+    Init->>API: Create SmartHQApi (OAuth2 session)
+    Init->>Coord: Create SmartHQCoordinator (no polling schedule)
+    Init->>Coord: async_config_entry_first_refresh()
+
+    Coord->>API: GET /v2/appliance (device list)
+    API->>Coord: [device_id, ...]
+
+    loop For each device_id
+        Coord->>API: GET /v2/device/{did}
+        API->>Coord: item (includes services[] array)
+        Coord->>API: GET /v2/device/{did}/setting/*
+        API->>Coord: settings[] (BOOLEAN + other types)
     end
-    
-    Note over HA,Cloud: Ready for operation
-    WS->>Coordinator: Real-time updates begin
-    Coordinator->>HA: Update all entities
+
+    Coord->>Init: coord.data = {did: {item, settings, ...}}
+
+    Note over Init,Store: Reflect coordinator data into runtime store
+    Init->>Store: For each did — build services{}, settings[], snapshot{}
+    Init->>Store: store[did] = {info, presence, settings, snapshot}
+
+    Note over Init,Platforms: Platform entity creation
+    Init->>Platforms: async_forward_entry_setups(ALL_PLATFORMS)
+
+    loop For each platform (sensor, switch, climate, ...)
+        Platforms->>Store: Read coord.data[did]["item"]["services"]
+        loop For each service in services[]
+            Platforms->>Platforms: Match serviceType to entity class
+            Platforms->>HA: Register entity
+        end
+        Platforms->>Store: Read coord.data[did]["settings"]
+        loop For each BOOLEAN setting
+            Platforms->>HA: Register SmartHQSettingSwitch
+        end
+    end
+
+    Note over Init,WS: Start real-time WebSocket
+    Init->>WS: SmartHQWebsocket(device_ids=[...])
+    WS->>API: GET WebSocket endpoint URL
+    API->>WS: wss://... URL
+    WS->>API: Connect WebSocket
+    loop For each device_id
+        WS->>API: Subscribe to device updates
+    end
+    WS->>Init: WS running
+
+    Note over Init,Poll: Start settings background poll
+    Init->>Poll: async_create_background_task(_poll_settings)
+    Poll->>Poll: Loop every 30 s
+    Poll->>API: GET /v2/device/{did}/setting/* (per device)
+    API->>Poll: settings[]
+    Poll->>Store: store[did]["settings"] = updated
+    Poll->>HA: SIGNAL_DEVICE_UPDATED (if changed)
+
+    Note over HA,Poll: Ready — WS pushes + 30 s settings poll running
 ```
 
-**Entity Platform Mapping:**
-- **Laundry**: Sensor (cycle status), Switch (remote enable), Binary Sensor (door lock)
-- **Oven**: Climate (temperature), Sensor (cook mode), Binary Sensor (preheat status)
-- **Refrigerator**: Number (temperature setpoint), Sensor (door status)
-- **Dishwasher**: Sensor (cycle status), Binary Sensor (rinse aid level)
-- **Smoker**: Climate (temperature), Sensor (probe temps), Binary Sensor (smoke level)
+**Key Points:**
+- `SmartHQCoordinator` runs **once at boot** — no periodic polling schedule
+- Entity creation is driven by the `services[]` array returned from `GET /v2/device/{did}`; each `serviceType` maps to a specific entity class
+- `SmartHQSettingSwitch` entities are created from the `settings[]` array (BOOLEAN type only)
+- After boot, state updates flow via WebSocket (service entities) or the 30 s settings poll (setting switches)
 
 ---
 
@@ -160,7 +221,7 @@ sequenceDiagram
 
     Entity->>API: Make API request
     API->>OAuth: Check token expiry
-    
+
     alt Token expired
         OAuth->>Storage: Get refresh token
         Storage->>OAuth: Refresh token
@@ -171,7 +232,7 @@ sequenceDiagram
     else Token valid
         OAuth->>API: Continue
     end
-    
+
     API->>Provider: Request with Bearer token
     Provider->>API: Response
     API->>Entity: Success
@@ -188,111 +249,118 @@ sequenceDiagram
     participant Coordinator
     participant HA as Home Assistant
 
-    WS->>Cloud: Heartbeat (60s interval)
+    WS->>Cloud: Heartbeat (60 s idle → ping frame)
     Cloud->>WS: Pong
-    
-    Note over WS,Cloud: Connection Lost
-    WS->>WS: Detect disconnection
-    WS->>Coordinator: Connection status: Disconnected
+
+    Note over WS,Cloud: Connection lost
+    WS->>WS: Detect disconnection / exception
     WS->>WS: consecutive_failures = 0
-    
-    loop Reconnection attempts (max 3 times)
+    WS->>WS: backoff = 1 s
+
+    loop Reconnection attempts (max_retries = 3)
         WS->>WS: consecutive_failures += 1
-        WS->>WS: Wait backoff (1s, 2s, 4s, 8s...)
-        WS->>Cloud: Get new WebSocket endpoint
-        Cloud->>WS: New WebSocket URL
-        WS->>Cloud: Attempt connection
-        
+        WS->>WS: sleep(backoff)
+        WS->>Cloud: GET new WebSocket endpoint URL
+        Cloud->>WS: wss://... URL
+        WS->>Cloud: Attempt WebSocket connection
+
         alt Connection successful
             Cloud->>WS: Connected
-            WS->>WS: Reset consecutive_failures = 0
-            WS->>WS: Reset backoff = 1s
-            WS->>Cloud: Resubscribe to all devices
-            WS->>Coordinator: Connection restored
+            WS->>WS: consecutive_failures = 0, backoff = 1 s
+            WS->>Cloud: Resubscribe all devices
+            WS->>Coordinator: SIGNAL_DEVICE_UPDATED (resume)
             Note over WS: Exit reconnection loop
-        else Connection failed AND attempts < 3
-            WS->>WS: Increase backoff = min(backoff * 2, 60s)
+        else Connection failed AND consecutive_failures < 3
+            WS->>WS: backoff = min(backoff x 2, 60 s)
             Note over WS: Continue to next attempt
-        else Connection failed AND attempts >= 3
-            WS->>WS: Stop reconnection loop
+        else Connection failed AND consecutive_failures >= 3
             WS->>HA: Create persistent notification<br/>"SmartHQ Connection Failed"<br/>"Please reload integration"
             Note over WS: Reconnection stopped<br/>Manual intervention required
         end
     end
 ```
 
+**Backoff Schedule:**
+
+| Attempt | Sleep before attempt |
+|---------|----------------------|
+| 1 | 1 s |
+| 2 | 2 s |
+| 3 | 4 s |
+| (cap) | max 60 s |
+
 ---
 
-## A3. Entity Creation Decision Logic
+## A3. Service-Type → Entity-Class Mapping
 
 ```mermaid
 sequenceDiagram
-    participant Platform as Entity Platform
-    participant Factory as Entity Factory
-    participant Device as Device Snapshot
+    participant Platform as Entity Platform (setup)
+    participant Dispatch as Service Dispatcher
     participant HA as Home Assistant
 
-    Platform->>Device: Get device info
-    Device->>Platform: services, settings, deviceType
-    
-    Platform->>Factory: Analyze services structure
-    
-    alt Laundry Platform
-        Factory->>Factory: Check serviceType == 'laundry'
-        Factory->>HA: Create SmartHQWasherSensor
-        Factory->>HA: Create SmartHQDryerSensor
-        Factory->>HA: Create SmartHQRemoteEnableSwitch
-    else Oven Platform (has temperature keys)
-        Factory->>Factory: Check for 'currentTemperature'
-        Factory->>HA: Create SmartHQOvenClimate
-        Factory->>HA: Create SmartHQCookModeSensor
-    else Refrigerator Platform
-        Factory->>Factory: Check domainType == 'brightness'
-        Factory->>HA: Create SmartHQRefrigeratorNumber
-    else Smoker Platform
-        Factory->>Factory: Check for probe sensors
-        Factory->>HA: Create SmartHQCookingModeSelect
-        Factory->>HA: Create SmartHQCoffeeBrewer (if coffee)
-        Factory->>HA: Create SmartHQBinarySensor
+    Platform->>Platform: Read coord.data[did]["item"]["services"]
+
+    loop For each service in services[]
+        Platform->>Dispatch: (serviceType, domainType) → entity class?
+
+        alt serviceType contains "cooking" AND domainType "setpoint"
+            Dispatch->>HA: SmartHQCookingClimate
+        else serviceType contains "cooking" AND domainType "cookingMode"
+            Dispatch->>HA: SmartHQCookingModeSelect
+        else serviceType contains "cooking" AND domainType "cookTime"
+            Dispatch->>HA: SmartHQCookTimeNumber
+        else serviceType contains "cooking" AND domainType "probe"
+            Dispatch->>HA: SmartHQProbeTemperatureSensor
+        else serviceType ends "light" AND domainType "toggle"
+            Dispatch->>HA: SmartHQLightToggleSwitch
+        else serviceType ends "light" AND domainType "brightness"
+            Dispatch->>HA: SmartHQLightNumber
+        else serviceType is "laundry"
+            Dispatch->>HA: SmartHQLaundrySensor / SmartHQRemoteEnableSwitch
+        else serviceType is "dishwasher"
+            Dispatch->>HA: SmartHQDishwasherSensor / SmartHQDishwasherSelect
+        else serviceType is "thermostat"
+            Dispatch->>HA: SmartHQThermostatClimate
+        else BOOLEAN setting (from settings[])
+            Dispatch->>HA: SmartHQSettingSwitch (EntityCategory.CONFIG)
+        end
     end
-    
-    HA->>Platform: Entities registered
+
+    HA->>Platform: All entities registered
 ```
 
 ---
 
-## A4. Full Snapshot Update Processing
+## A4. WebSocket Message Processing
 
 ```mermaid
 sequenceDiagram
     participant Cloud as SmartHQ Cloud
     participant WS as WebSocket Client
-    participant Store as Data Store
+    participant Store as In-Memory Store
     participant Dispatcher
     participant Entities as HA Entities
 
-    Cloud->>WS: WebSocket message<br/>(service update)
-    WS->>WS: Parse message JSON
-    WS->>WS: Extract serviceId, serviceType, state
-    
-    alt Full Snapshot Update
-        WS->>Store: snapshot[device_id].services = new_data
-        Note over Store: Replace entire services dict
-    else Delta Update
-        WS->>Store: Merge state changes into existing
-        Note over Store: Update only changed fields
+    Cloud->>WS: WebSocket push message (JSON)
+    WS->>WS: Parse message — extract serviceId, serviceType, domainType, state
+
+    alt Service state update
+        WS->>Store: store[did]["snapshot"]["services"][serviceId] = new_state
+        Note over Store: Merge metadata (serviceType, domainType, config)
+    else Presence / info update
+        WS->>Store: store[did]["presence"] = updated
     end
-    
-    WS->>Store: Update device alerts (if any)
-    WS->>Dispatcher: Send SIGNAL_DEVICE_UPDATED
-    Dispatcher->>Entities: Notify all subscribed entities
-    
-    loop For each entity
-        Entities->>Store: Read updated snapshot
-        Entities->>Entities: Update internal state
-        Entities->>HA: schedule_update_ha_state()
+
+    WS->>Dispatcher: async_dispatcher_send(SIGNAL_DEVICE_UPDATED.format(did))
+    Dispatcher->>Entities: Notify all subscribed entities for did
+
+    loop For each subscribed entity
+        Entities->>Store: Read store[did]["snapshot"]["services"][serviceId]
+        Entities->>Entities: Recompute state from updated data
+        Entities->>HA: async_write_ha_state()
     end
-    
+
     Note over HA: UI updates automatically
 ```
 
@@ -300,16 +368,19 @@ sequenceDiagram
 
 ## Notes
 
-- **REST API**: Used for commands and initial data fetch
-- **WebSocket**: Used for real-time state updates (more efficient than polling)
-- **Coordinator**: Central hub for data management and API coordination
-- **Entity Platforms**: sensor, binary_sensor, switch, climate, number, select, button
-- **Reconnection**: Automatic with exponential backoff (max 60s)
-- **Token Refresh**: Automatic and transparent to user
+- **REST API**: Used for initial boot data fetch (`GET /v2/device/{did}`, `GET /v2/device/{did}/setting/*`) and settings writes (`PATCH`)
+- **WebSocket**: Used for real-time service state updates — no polling overhead for service entities
+- **Settings Polling**: 30 s background task — required because WebSocket does not push settings changes
+- **Coordinator**: Runs only once at boot (`async_config_entry_first_refresh`); no periodic update schedule
+- **Entity Platforms**: `sensor`, `binary_sensor`, `switch`, `climate`, `number`, `select`, `button`, `light`, `water_heater`
+- **Reconnection**: Automatic with exponential backoff (1 s → 2 s → 4 s), max 3 attempts before persistent notification
+- **Token Refresh**: Automatic and transparent to user via `OAuth2Session`
 
-For implementation details, see the source code in:
-- `config_flow.py` - OAuth2 flow
-- `coordinator.py` - Data coordination
-- `ws_client.py` - WebSocket handling
-- `api.py` - REST API calls
-- Platform files (`sensor.py`, `switch.py`, etc.) - Entity implementations
+For implementation details, see:
+- `config_flow.py` — OAuth2 flow
+- `coordinator.py` — One-time boot data fetch
+- `__init__.py` — Bootstrap, store wiring, WS start, settings poll
+- `ws_client.py` — WebSocket connection, reconnection, command dispatch
+- `api.py` — REST API calls
+- `switch.py` — `SmartHQSettingSwitch` (settings) + service-based switches
+- Platform files (`sensor.py`, `climate.py`, `select.py`, `number.py`, `button.py`, …) — Entity implementations
