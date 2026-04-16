@@ -85,7 +85,7 @@ async def async_setup_entry(
             if not isinstance(services_list, list):
                 continue
 
-            info = item.get("info") or {}
+            info = device_item.get("info") or {}
             dev_name = info.get("nickname") or info.get("name") or DEFAULT_NAME
 
             for svc in services_list:

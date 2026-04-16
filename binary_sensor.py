@@ -670,6 +670,7 @@ class SmartHQFirmwareUpdateBinarySensor(BinarySensorEntity):
     _attr_device_class = BinarySensorDeviceClass.UPDATE
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_has_entity_name = True
+    _attr_entity_registry_enabled_default = False
 
     # Statuses that mean "no update pending"
     _IDLE_STATUSES = frozenset({"idle", ""})

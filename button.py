@@ -108,7 +108,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         if not isinstance(services_list, list):
             continue
 
-        info = item.get("info") or {}
+        info = device_item.get("info") or {}
         dev_name = info.get("nickname") or info.get("name") or DEFAULT_NAME
 
         # Detect cooking.mode.v1 food-domain services for StartCookingButton

@@ -58,7 +58,8 @@ async def async_setup_entry(
 
     for device_id, dev_data in coordinator.data.items():
         item = dev_data.get("item", {})
-        dev_name: str = item.get("nickname") or item.get("name") or DEFAULT_NAME
+        _info = dev_data.get("info") or {}
+        dev_name: str = _info.get("nickname") or _info.get("name") or DEFAULT_NAME
         services_list = item.get("services") or []
         if not isinstance(services_list, list):
             continue
