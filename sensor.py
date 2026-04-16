@@ -1,6 +1,7 @@
 # /config/custom_components/smarthq/sensor.py
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -230,6 +231,98 @@ def _preheat_key_from(stype: str, dom: str, state: Dict[str, Any]) -> Optional[T
     return None
 
 
+# Map domainType tail keyword → human-readable prefix for time sensors
+_DOMAIN_TIME_PREFIX: Dict[str, str] = {
+    "cooking":    "Cook",
+    "laundry":    "Cycle",
+    "washer":     "Cycle",
+    "dryer":      "Cycle",
+    "dishwasher": "Cycle",
+    "brew":       "Brew",
+    "coffee":     "Brew",
+    "bake":       "Cook",
+    "roast":      "Cook",
+    "oven":       "Cook",
+}
+
+_KEY_TIME_SUFFIX: Dict[str, str] = {
+    "secondsRemaining": "Time Remaining",
+    "secondsElapsed":   "Time Elapsed",
+    "cookTimeInitial":  "Time Initial",
+}
+
+def _label_for_time_key(key: str, stype: str, dom: str) -> str:
+    """Generate a human-readable label for time keys based on serviceType/domainType.
+
+    Examples:
+      secondsRemaining + cooking domain  → "Cook Time Remaining"
+      secondsRemaining + laundry domain  → "Cycle Time Remaining"
+      secondsRemaining + unknown domain  → "Time Remaining"
+    """
+    suffix = _KEY_TIME_SUFFIX.get(key)
+    if not suffix:
+        return key.replace("_", " ").title()
+
+    combined = (stype + " " + dom).lower()
+    for keyword, prefix in _DOMAIN_TIME_PREFIX.items():
+        if keyword in combined:
+            return f"{prefix} {suffix}"
+    return suffix  # no matching domain → plain "Time Remaining" etc.
+
+
+# ---- Temperature domain → label prefix ----
+_TEMP_DOMAIN_LABEL: Dict[str, str] = {
+    "measurement": "Ambient",
+    "early":       "Ambient",
+    "cooking":     "Cavity",
+    "probe":       "Probe",
+    "cavity":      "Cavity",
+    "smoker":      "Cavity",
+}
+
+
+def _camel_to_words(key: str) -> str:
+    """Convert camelCase or snake_case key to Title Case words.
+
+    Examples:
+      runStatus           → "Run Status"
+      secondsRemaining    → "Seconds Remaining"
+      laundryDrynessLevel → "Laundry Dryness Level"
+      versionCurrent      → "Version Current"
+    """
+    s = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", key)
+    s = re.sub(r"([a-z\d])([A-Z])", r"\1 \2", s)
+    return s.replace("_", " ").strip().title()
+
+
+def _label_for_key(key: str, stype: str = "", dom: str = "") -> str:
+    """Generate a human-readable label for any state_key with optional context.
+
+    Dispatch order:
+      1. Time keys  → _label_for_time_key (domain-aware)
+      2. Temperature keys → domain-aware prefix + "Temperature [°F]"
+      3. Everything else → _camel_to_words(key)
+    """
+    # 1. Time keys
+    if key in _KEY_TIME_SUFFIX:
+        return _label_for_time_key(key, stype, dom)
+
+    # 2. Temperature keys: derive prefix from domainType / serviceType
+    if key in _C_KEYS or key in _F_KEYS:
+        unit_sfx = "" if key in _C_KEYS else " (°F)"
+        combined_low = (stype + " " + dom).lower()
+        for kw, prefix in _TEMP_DOMAIN_LABEL.items():
+            if kw in combined_low:
+                return f"{prefix} Temperature{unit_sfx}"
+        # Fallback: domain tail
+        dom_tail = dom.split(".")[-1].replace("_", " ").title() if dom else ""
+        prefix = dom_tail if dom_tail else "Ambient"
+        return f"{prefix} Temperature{unit_sfx}"
+
+    # 3. Generic camelCase conversion
+    return _camel_to_words(key)
+
+
 # -------------------------
 # Dynamic sensor crafting
 # -------------------------
@@ -242,26 +335,27 @@ class _DynKey:
     unit: Optional[str] = None
     icon: Optional[str] = None
 
-# Default label candidates (labels partially overridden by domain below)
+# Labels are generated dynamically via _label_for_key(key, stype, dom).
+# name="" means "derive from key+context at runtime".
 _DYN_KEYS: List[_DynKey] = [
-    # Temperature
-    _DynKey("Ambient Temperature", "celsiusConverted", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.CELSIUS, "mdi:thermometer"),
-    _DynKey("Ambient Temperature (°F)", "fahrenheit", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.FAHRENHEIT, "mdi:thermometer"),
-    _DynKey("Cavity Temperature", "cavityTemperatureCelsiusConverted", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.CELSIUS, "mdi:thermometer"),
-    _DynKey("Cavity Temperature (°F)", "cavityTemperatureFahrenheit", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.FAHRENHEIT, "mdi:thermometer"),
-    _DynKey("Probe Temperature", "probeTemperatureCelsiusConverted", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.CELSIUS, "mdi:thermometer"),
-    _DynKey("Probe Temperature (°F)", "probeTemperatureFahrenheit", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.FAHRENHEIT, "mdi:thermometer"),
-    # Timer/progress
-    _DynKey("Cook Time Initial", "cookTimeInitial", None, None, "mdi:timer"),
-    _DynKey("Cook Time Remaining", "secondsRemaining", None, None, "mdi:timer-outline"),
-    _DynKey("Cook Time Elapsed", "secondsElapsed", None, None, "mdi:timer-sand"),
-    _DynKey("Preheat Progress", "preheatProgress", None, PERCENTAGE, "mdi:progress-clock"),
-    # Others
-    _DynKey("Signal Strength", "signalStrength", None, None, "mdi:wifi-strength-2"),
-    _DynKey("Smoke Level", "numericOptionValue", None, None, "mdi:fire"),
-    _DynKey("Run Status", "runStatus", None, None, "mdi:information"),
-    _DynKey("Mode", "mode", None, None, "mdi:tune"),
-    _DynKey("Value", "value"),
+    # Temperature — label generated by _label_for_key (domain-aware prefix)
+    _DynKey("", "celsiusConverted", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.CELSIUS, "mdi:thermometer"),
+    _DynKey("", "fahrenheit", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.FAHRENHEIT, "mdi:thermometer"),
+    _DynKey("", "cavityTemperatureCelsiusConverted", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.CELSIUS, "mdi:thermometer"),
+    _DynKey("", "cavityTemperatureFahrenheit", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.FAHRENHEIT, "mdi:thermometer"),
+    _DynKey("", "probeTemperatureCelsiusConverted", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.CELSIUS, "mdi:thermometer"),
+    _DynKey("", "probeTemperatureFahrenheit", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.FAHRENHEIT, "mdi:thermometer"),
+    # Timer/progress — label generated by _label_for_key (time/domain-aware)
+    _DynKey("", "cookTimeInitial", None, None, "mdi:timer"),
+    _DynKey("", "secondsRemaining", None, None, "mdi:timer-outline"),
+    _DynKey("", "secondsElapsed", None, None, "mdi:timer-sand"),
+    _DynKey("", "preheatProgress", None, PERCENTAGE, "mdi:progress-clock"),
+    # Others — label = _camel_to_words(key)
+    _DynKey("", "signalStrength", None, None, "mdi:wifi-strength-2"),
+    _DynKey("", "numericOptionValue", None, None, "mdi:fire"),
+    _DynKey("", "runStatus", None, None, "mdi:information"),
+    _DynKey("", "mode", None, None, "mdi:tune"),
+    _DynKey("", "value"),
 ]
 
 
@@ -499,6 +593,7 @@ class SmartHQServiceSensor(SensorEntity):
         unit,
         unique_id: str,
         entity_category=None,
+        enabled_default: bool = True,
     ) -> None:
         self.hass = hass
         self._entry = entry
@@ -514,6 +609,7 @@ class SmartHQServiceSensor(SensorEntity):
         self._attr_unique_id = unique_id
         if entity_category is not None:
             self._attr_entity_category = entity_category
+        self._attr_entity_registry_enabled_default = enabled_default
 
     def _get_state(self) -> dict:
         snap = _snapshot_for(self.hass, self._entry, self._device_id)
@@ -823,7 +919,7 @@ def _iter_dynamic_sensors(hass: HomeAssistant, entry: ConfigEntry, device_id: st
             if k not in chosen_sid_for_key and _allow_key_for_system_unit(hass, entry, k, device_id):
                 chosen_sid_for_key[k] = sid
 
-    # 1) Pretty labels first
+    # 1) Pretty labels first (icons / units from _DYN_KEYS)
     for dyn in _DYN_KEYS:
         key = dyn.key
         sid = chosen_sid_for_key.get(key)
@@ -835,28 +931,22 @@ def _iter_dynamic_sensors(hass: HomeAssistant, entry: ConfigEntry, device_id: st
         if key != "preheatProgress" and key not in st:
             continue
 
-        # ---- Temperature label routing (distinguish Ambient/Cavity by domain) ----
         stype, dom = rev.get(sid, (None, ""))
-        label = dyn.name
+        # cooking.mode.v1 temperature keys → "Target" prefix
+        if stype == "cloud.smarthq.service.cooking.mode.v1" and key in _C_KEYS | _F_KEYS:
+            unit_sfx = "" if key in _C_KEYS else " (°F)"
+            if "cavity" in key.lower():
+                label = f"Cavity Target Temperature{unit_sfx}"
+            elif "probe" in key.lower():
+                label = f"Probe Target Temperature{unit_sfx}"
+            else:
+                label = f"Target Temperature{unit_sfx}"
+        else:
+            label = _label_for_key(key, stype or "", dom or "")
+
         unit = dyn.unit
         dev_class = dyn.device_class
         icon = dyn.icon
-
-        if stype == "cloud.smarthq.service.cooking.mode.v1":
-            if key in ("cavityTemperatureCelsiusConverted", "cavityTemperatureFahrenheit"):
-                label = "Cavity Target Temperature" if "Celsius" in key or key == "cavityTemperatureCelsiusConverted" \
-                    else "Cavity Target Temperature (°F)"
-            if key in ("probeTemperatureCelsiusConverted", "probeTemperatureFahrenheit"):
-                label = "Probe Target Temperature" if "Celsius" in key or key == "probeTemperatureCelsiusConverted" \
-                    else "Probe Target Temperature (°F)"
-
-        if key in ("celsiusConverted", "fahrenheit") and stype == "cloud.smarthq.service.temperature":
-            dom_low = (dom or "").lower()
-            if ("measurement" in dom_low) or ("early.temperature" in dom_low):
-                label = "Ambient Temperature" if key == "celsiusConverted" else "Ambient Temperature (°F)"
-            elif "cooking" in dom_low:
-                # cooking.* → consider as Cavity
-                label = "Cavity Temperature" if key == "celsiusConverted" else "Cavity Temperature (°F)"
 
         if label in made_labels:
             continue
@@ -874,40 +964,31 @@ def _iter_dynamic_sensors(hass: HomeAssistant, entry: ConfigEntry, device_id: st
         added_pairs.add(pair)
         made_labels.add(label)
 
-    # 2) Simple labels for remaining keys
+    # 2) Fallback labels for remaining keys not covered by _DYN_KEYS
     for key, sid in chosen_sid_for_key.items():
-        # Skip labels already created in 1)
         stype, dom = rev.get(sid, (None, ""))
-        label = key.replace("_", " ").title()
         dev_class = None
         unit = None
 
-        if stype == "cloud.smarthq.service.cooking.mode.v1":
-            if key in ("cavityTemperatureCelsiusConverted", "cavityTemperatureFahrenheit"):
-                label = "Cavity Target Temperature" if "Celsius" in key or key == "cavityTemperatureCelsiusConverted" \
-                    else "Cavity Target Temperature (°F)"
-            if key in ("probeTemperatureCelsiusConverted", "probeTemperatureFahrenheit"):
-                label = "Probe Target Temperature" if "Celsius" in key or key == "probeTemperatureCelsiusConverted" \
-                    else "Probe Target Temperature (°F)"
+        # cooking.mode.v1 temperature keys → "Target" prefix
+        if stype == "cloud.smarthq.service.cooking.mode.v1" and key in _C_KEYS | _F_KEYS:
+            unit_sfx = "" if key in _C_KEYS else " (°F)"
+            if "cavity" in key.lower():
+                label = f"Cavity Target Temperature{unit_sfx}"
+            elif "probe" in key.lower():
+                label = f"Probe Target Temperature{unit_sfx}"
+            else:
+                label = f"Target Temperature{unit_sfx}"
+        else:
+            label = _label_for_key(key, stype or "", dom or "")
 
-        if key in ("cavityTemperatureCelsiusConverted", "probeTemperatureCelsiusConverted", "celsiusConverted"):
+        if key in _C_KEYS:
             dev_class = SensorDeviceClass.TEMPERATURE
             unit = UnitOfTemperature.CELSIUS
-        if key in ("cavityTemperatureFahrenheit", "probeTemperatureFahrenheit", "fahrenheit"):
+        elif key in _F_KEYS:
             dev_class = SensorDeviceClass.TEMPERATURE
             unit = UnitOfTemperature.FAHRENHEIT
-
-        # Temperature label routing
-        if key in ("celsiusConverted", "fahrenheit") and stype == "cloud.smarthq.service.temperature":
-            dom_low = (dom or "").lower()
-            if ("measurement" in dom_low) or ("early.temperature" in dom_low):
-                label = "Ambient Temperature" if key == "celsiusConverted" else "Ambient Temperature (°F)"
-            elif "cooking" in dom_low:
-                label = "Cavity Temperature" if key == "celsiusConverted" else "Cavity Temperature (°F)"
-
-        # Unify progress labels
-        if key == "preheatProgress":
-            label = "Preheat Progress"
+        elif key == "preheatProgress":
             dev_class = None
             unit = PERCENTAGE
 
@@ -976,22 +1057,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
                 # ── temperature sensor (read-only) ──────────────────────────
                 if stype == TEMPERATURE_SERVICE and CMD_TEMPERATURE_SET not in cmds:
-                    dom_low = dom.lower()
                     sdev = svc.get("serviceDeviceType") or ""
-                    if "measurement" in dom_low:
-                        # Two measurement services exist on Smoker:
-                        #   serviceDeviceType=device.probe  → probe ambient temp
-                        #   serviceDeviceType=device.smoker → actual cavity temp
-                        if "smoker" in sdev.lower():
-                            label = "Cavity Temperature"
-                        else:
-                            label = "Ambient Temperature"
-                    elif "early" in dom_low:
-                        label = "Ambient Temperature"
-                    elif "cooking" in dom_low:
+                    # For measurement domain with two serviceDeviceType instances
+                    # (Smoker: device.smoker=Cavity, device.probe=Ambient)
+                    if "measurement" in dom.lower() and "smoker" in sdev.lower():
                         label = "Cavity Temperature"
                     else:
-                        label = dom.split(".")[-1].replace("_", " ").title() + " Temperature"
+                        label = _label_for_key("fahrenheit", stype, dom)
 
                     # Single entity whose unit follows the device's temperatureunits
                     # setting at runtime.  Use the legacy °F uid for continuity.
@@ -1006,7 +1078,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 # ── integer sensor (read-only) ──────────────────────────────
                 elif stype == INTEGER_SERVICE and CMD_INTEGER_SET not in cmds:
                     int_units = cfg.get("integerUnits") or ""
-                    label_base = cfg.get("label") or dom.split(".")[-1].replace("_", " ").title()
+                    label_base = cfg.get("label") or _camel_to_words(dom.split(".")[-1])
                     ha_unit, dev_class = _integer_units_to_ha(int_units)
                     uid = make_unique_id(device_id, service_id, "integer")
                     if uid not in existing_uids:
@@ -1021,7 +1093,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 elif stype == METER_SERVICE:
                     meter_units = cfg.get("meterUnits") or ""
                     ha_unit, dev_class = _meter_units_to_ha(meter_units, dom)
-                    label_base = dom.split(".")[-1].replace("_", " ").title() + " Meter"
+                    label_base = _camel_to_words(dom.split(".")[-1]) + " Meter"
                     uid = make_unique_id(device_id, service_id, "meter")
                     if uid not in existing_uids:
                         entities.append(SmartHQMeterSensor(
@@ -1034,7 +1106,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 elif stype == ENVIRONMENTAL_SERVICE:
                     env_class = ENVIRONMENTAL_DOMAIN_DEVICE_CLASS.get(dom, "")
                     uid = make_unique_id(device_id, service_id, "env")
-                    label_base = dom.split(".")[-1].replace("_", " ").title()
+                    label_base = _camel_to_words(dom.split(".")[-1])
                     if uid not in existing_uids:
                         entities.append(SmartHQEnvironmentalSensor(
                             hass, entry, device_id, service_id, dev_name,
@@ -1042,40 +1114,42 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                         ))
                         existing_uids.add(uid)
 
-                # ── firmware version sensors ────────────────────────────────
+                # ── firmware version sensors (hidden by default — diagnostic only) ──
                 elif stype == FIRMWARE_SERVICE:
-                    for state_key, label_suffix, uid_sfx in [
-                        ("versionCurrent", "Firmware Version", "fw_current"),
-                        ("versionAvailable", "Firmware Available", "fw_available"),
-                        ("upgradeStatus", "Firmware Status", "fw_status"),
+                    for state_key, uid_sfx in [
+                        ("versionCurrent",   "fw_current"),
+                        ("versionAvailable", "fw_available"),
+                        ("upgradeStatus",    "fw_status"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQServiceSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key,
+                                _camel_to_words(state_key), state_key,
                                 None, None, uid,
+                                entity_category=EntityCategory.DIAGNOSTIC,
+                                enabled_default=False,
                             ))
                             existing_uids.add(uid)
 
                 # ── cycletimer sensor ───────────────────────────────────────
                 elif stype == CYCLETIMER_SERVICE:
-                    for state_key, label_suffix, uid_sfx in [
-                        ("timeRemaining", "Time Remaining", "timer_remaining"),
-                        ("timeElapsed", "Time Elapsed", "timer_elapsed"),
+                    for state_key, uid_sfx in [
+                        ("timeRemaining", "timer_remaining"),
+                        ("timeElapsed",   "timer_elapsed"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQServiceSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key,
+                                _label_for_key(state_key, stype, dom), state_key,
                                 SensorDeviceClass.DURATION, "s", uid,
                             ))
                             existing_uids.add(uid)
 
                 # ── double sensor (float value) ─────────────────────────────
                 elif stype == DOUBLE_SERVICE:
-                    label_base = cfg.get("label") or dom.split(".")[-1].replace("_", " ").title()
+                    label_base = cfg.get("label") or _camel_to_words(dom.split(".")[-1])
                     uid = make_unique_id(device_id, service_id, "double")
                     if uid not in existing_uids:
                         entities.append(SmartHQServiceSensor(
@@ -1088,7 +1162,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 # ── string sensor ───────────────────────────────────────────
                 elif stype == STRING_SERVICE and CMD_STRING_SET not in cmds:
                     # Read-only: expose as sensor. Writable case → text.py
-                    label_base = cfg.get("label") or dom.split(".")[-1].replace("_", " ").title()
+                    label_base = cfg.get("label") or _camel_to_words(dom.split(".")[-1])
                     uid = make_unique_id(device_id, service_id, "string")
                     if uid not in existing_uids:
                         entities.append(SmartHQServiceSensor(
@@ -1104,22 +1178,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     if uid not in existing_uids:
                         entities.append(SmartHQServiceSensor(
                             hass, entry, device_id, service_id, dev_name,
-                            "Battery", "level",
+                            _camel_to_words("batteryLevel"), "level",
                             SensorDeviceClass.BATTERY, PERCENTAGE, uid,
                         ))
                         existing_uids.add(uid)
 
                 # ── cooking state sensor (read-only status) ─────────────────
                 elif stype == COOKING_STATE_SERVICE:
-                    for state_key, label_suffix, uid_sfx in [
-                        ("cookingStatus", "Cooking Status", "cook_status"),
-                        ("runStatus", "Run Status", "run_status"),
+                    for state_key, uid_sfx in [
+                        ("cookingStatus", "cook_status"),
+                        ("runStatus",     "run_status"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQServiceSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key,
+                                _camel_to_words(state_key), state_key,
                                 None, None, uid,
                             ))
                             existing_uids.add(uid)
@@ -1130,7 +1204,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     if uid not in existing_uids:
                         entities.append(SmartHQServiceSensor(
                             hass, entry, device_id, service_id, dev_name,
-                            "Elapsed", "secondsElapsed",
+                            _camel_to_words("secondsElapsed"), "secondsElapsed",
                             SensorDeviceClass.DURATION, "s", uid,
                         ))
                         existing_uids.add(uid)
@@ -1141,129 +1215,127 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     if uid not in existing_uids:
                         entities.append(SmartHQServiceSensor(
                             hass, entry, device_id, service_id, dev_name,
-                            "Volume", "liters",
+                            _camel_to_words("liters"), "liters",
                             SensorDeviceClass.WATER, UnitOfVolume.LITERS, uid,
                         ))
                         existing_uids.add(uid)
 
                 # ── scale.v1 sensors ────────────────────────────────────────
                 elif stype == SCALE_SERVICE:
-                    for state_key, label_suffix, uid_sfx in [
-                        ("weightCurrent", "Current Weight", "scale_current"),
-                        ("weightTarget",  "Target Weight",  "scale_target"),
+                    for state_key, uid_sfx in [
+                        ("weightCurrent", "scale_current"),
+                        ("weightTarget",  "scale_target"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQServiceSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key,
+                                _camel_to_words(state_key), state_key,
                                 SensorDeviceClass.WEIGHT, UnitOfMass.GRAMS, uid,
                             ))
                             existing_uids.add(uid)
 
                 # ── power.usage sensors ─────────────────────────────────────
                 elif stype == POWER_USAGE_SERVICE:
-                    for state_key, label_suffix, uid_sfx, dev_cls, unit in [
-                        ("instantaneousPower",   "Power",  "power_instant", SensorDeviceClass.POWER,  UnitOfPower.WATT),
-                        ("wattSecondsSinceClear", "Energy", "power_energy",  None,                    "Ws"),
+                    for state_key, uid_sfx, dev_cls, unit in [
+                        ("instantaneousPower",    "power_instant", SensorDeviceClass.POWER, UnitOfPower.WATT),
+                        ("wattSecondsSinceClear", "power_energy",  None,                    "Ws"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQServiceSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key,
+                                _camel_to_words(state_key), state_key,
                                 dev_cls, unit, uid,
                             ))
                             existing_uids.add(uid)
 
                 # ── laundry state sensor ────────────────────────────────────
                 elif stype == LAUNDRY_STATE_SERVICE:
-                    _LOGGER.warning(
+                    _LOGGER.debug(
                         "[LAUNDRY_SENSOR] device=%s dev_name=%r service_id=%s creating sensors",
                         device_id[:8], dev_name, service_id[:8],
                     )
-                    for state_key, label_suffix, uid_sfx in [
-                        ("runStatus",          "Run Status",          "laundry_run_status"),
-                        ("cycle",              "Cycle",               "laundry_cycle"),
-                        ("subCycle",           "Sub Cycle",           "laundry_subcycle"),
-                        ("laundrySpin",        "Spin",                "laundry_spin"),
-                        ("laundryTemperature", "Temperature",         "laundry_temperature"),
-                        ("laundryRinse",       "Rinse",               "laundry_rinse"),
-                        ("laundrySoil",        "Soil Level",          "laundry_soil"),
-                        ("laundryDrynessLevel","Dryness Level",       "laundry_dryness"),
-                        ("stain",              "Stain",               "laundry_stain"),
+                    for state_key, uid_sfx in [
+                        ("runStatus",          "laundry_run_status"),
+                        ("cycle",              "laundry_cycle"),
+                        ("subCycle",           "laundry_subcycle"),
+                        ("laundrySpin",        "laundry_spin"),
+                        ("laundryTemperature", "laundry_temperature"),
+                        ("laundryRinse",       "laundry_rinse"),
+                        ("laundrySoil",        "laundry_soil"),
+                        ("laundryDrynessLevel","laundry_dryness"),
+                        ("stain",              "laundry_stain"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQLaundryStateSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, uid,
+                                _camel_to_words(state_key), state_key, uid,
                             ))
                             existing_uids.add(uid)
 
                 # ── delaywindow sensors ─────────────────────────────────────
                 elif stype == DELAYWINDOW_SERVICE:
-                    for state_key, label_suffix, uid_sfx in [
-                        ("startTime", "Delay Start", "delay_start"),
-                        ("endTime",   "Delay End",   "delay_end"),
+                    for state_key, uid_sfx in [
+                        ("startTime", "delay_start"),
+                        ("endTime",   "delay_end"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQServiceSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key,
+                                _camel_to_words(state_key), state_key,
                                 None, None, uid,
                             ))
                             existing_uids.add(uid)
 
                 # ── brew.mode.v1 sensors ────────────────────────────────────
                 elif stype == BREW_MODE_SERVICE:
-                    dom_label = (dom.split(".")[-1].replace("_", " ").title() if dom else "Brew")
-                    for state_key, label_sfx, uid_sfx, dev_cls, unit in [
-                        ("volume",         f"{dom_label} Volume",      "brew_volume",      None, None),
-                        ("grindTime",      f"{dom_label} Grind Time",  "brew_grind_time",  SensorDeviceClass.DURATION, "s"),
-                        ("brewTemperature",f"{dom_label} Temperature", "brew_temperature", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.CELSIUS),
+                    for state_key, uid_sfx, dev_cls, unit in [
+                        ("volume",          "brew_volume",      None,                          None),
+                        ("grindTime",       "brew_grind_time",  SensorDeviceClass.DURATION,    "s"),
+                        ("brewTemperature", "brew_temperature", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.CELSIUS),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQServiceSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_sfx, state_key,
+                                _label_for_key(state_key, stype, dom), state_key,
                                 dev_cls, unit, uid,
                             ))
                             existing_uids.add(uid)
 
                 # ── dishwasher.state.v1 sensors ─────────────────────────────
                 elif stype == DISHWASHER_STATE_V1_SERVICE:
-                    for state_key, label_suffix, uid_sfx in [
-                        ("runStatus",       "Run Status",      "dw_run_status"),
-                        ("mode",            "Mode",            "dw_mode"),
-                        ("cycleIndication", "Cycle",           "dw_cycle"),
-                        ("delayStart",      "Delay Start",     "dw_delay_start"),
+                    for state_key, uid_sfx in [
+                        ("runStatus",       "dw_run_status"),
+                        ("mode",            "dw_mode"),
+                        ("cycleIndication", "dw_cycle"),
+                        ("delayStart",      "dw_delay_start"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQLaundryStateSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, uid,
+                                _camel_to_words(state_key), state_key, uid,
                             ))
                             existing_uids.add(uid)
 
                 # ── dishdrawer.state.legacy sensors ──────────────────────────
                 elif stype == DISHDRAWER_STATE_LEGACY_SERVICE:
-                    # State: mode, cycleIndication, runStatus, delayStart, dishdrawerModeLegacyOption
-                    for state_key, label_suffix, uid_sfx in [
-                        ("runStatus",                  "Dishdrawer Run Status",   "ddr_run_status"),
-                        ("mode",                       "Dishdrawer Mode",         "ddr_mode"),
-                        ("cycleIndication",            "Dishdrawer Cycle",        "ddr_cycle"),
-                        ("delayStart",                 "Dishdrawer Delay Start",  "ddr_delay_start"),
-                        ("dishdrawerModeLegacyOption", "Dishdrawer Option",       "ddr_option"),
+                    for state_key, uid_sfx in [
+                        ("runStatus",                  "ddr_run_status"),
+                        ("mode",                       "ddr_mode"),
+                        ("cycleIndication",            "ddr_cycle"),
+                        ("delayStart",                 "ddr_delay_start"),
+                        ("dishdrawerModeLegacyOption", "ddr_option"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQLaundryStateSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, uid,
+                                _camel_to_words(state_key), state_key, uid,
                             ))
                             existing_uids.add(uid)
 
@@ -1273,42 +1345,40 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     if uid not in existing_uids:
                         entities.append(SmartHQLaundryStateSensor(
                             hass, entry, device_id, service_id, dev_name,
-                            "Rinse Agent", "rinseAgentStatus", uid,
+                            _camel_to_words("rinseAgentStatus"), "rinseAgentStatus", uid,
                         ))
                         existing_uids.add(uid)
 
                 # ── dishwasher.state.legacy sensors ──────────────────────────
                 elif stype == DISHWASHER_STATE_LEGACY_SERVICE:
-                    # State: runStatus, shortNameMode, cycleIndication, delayStart,
-                    #        heatedDry, washTemp, washZone (read-only, no commands)
-                    for state_key, label_suffix, uid_sfx in [
-                        ("runStatus",       "Dishwasher Run Status",  "dws_lg_run_status"),
-                        ("shortNameMode",   "Dishwasher Mode",        "dws_lg_mode"),
-                        ("cycleIndication", "Dishwasher Cycle",       "dws_lg_cycle"),
-                        ("delayStart",      "Dishwasher Delay Start", "dws_lg_delay"),
-                        ("heatedDry",       "Dishwasher Heated Dry",  "dws_lg_heated_dry"),
-                        ("washTemp",        "Dishwasher Wash Temp",   "dws_lg_wash_temp"),
-                        ("washZone",        "Dishwasher Wash Zone",   "dws_lg_wash_zone"),
+                    for state_key, uid_sfx in [
+                        ("runStatus",       "dws_lg_run_status"),
+                        ("shortNameMode",   "dws_lg_mode"),
+                        ("cycleIndication", "dws_lg_cycle"),
+                        ("delayStart",      "dws_lg_delay"),
+                        ("heatedDry",       "dws_lg_heated_dry"),
+                        ("washTemp",        "dws_lg_wash_temp"),
+                        ("washZone",        "dws_lg_wash_zone"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQLaundryStateSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, uid,
+                                _camel_to_words(state_key), state_key, uid,
                             ))
                             existing_uids.add(uid)
 
                 # ── descale.v1 sensors ───────────────────────────────────────
                 elif stype == DESCALE_V1_SERVICE:
-                    for state_key, label_suffix, uid_sfx, dev_cls, unit in [
-                        ("runStatus",         "Descale Status",          "descale_status",  None, None),
-                        ("volumeUntilNeeded", "Volume Until Descale",    "descale_volume",  None, "mL"),
+                    for state_key, uid_sfx, dev_cls, unit in [
+                        ("runStatus",         "descale_status", None, None),
+                        ("volumeUntilNeeded", "descale_volume", None, "mL"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQServiceSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key,
+                                _camel_to_words(state_key), state_key,
                                 dev_cls, unit, uid,
                             ))
                             existing_uids.add(uid)
@@ -1319,40 +1389,40 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     if uid not in existing_uids:
                         entities.append(SmartHQLaundryStateSensor(
                             hass, entry, device_id, service_id, dev_name,
-                            "Vent Health Mode", "mode", uid,
+                            _label_for_key("mode", stype, dom), "mode", uid,
                         ))
                         existing_uids.add(uid)
 
                 # ── laundry.bulktank sensors ─────────────────────────────────
                 elif stype == LAUNDRY_BULKTANK_SERVICE:
-                    for state_key, label_suffix, uid_sfx, dev_cls, unit in [
-                        ("tank1usagePercent", "Tank 1 Level",     "bulktank1_pct",  None, PERCENTAGE),
-                        ("tank2usagePercent", "Tank 2 Level",     "bulktank2_pct",  None, PERCENTAGE),
-                        ("tank1substance",    "Tank 1 Substance", "bulktank1_sub",  None, None),
-                        ("tank2substance",    "Tank 2 Substance", "bulktank2_sub",  None, None),
+                    for state_key, uid_sfx, dev_cls, unit in [
+                        ("tank1usagePercent", "bulktank1_pct", None, PERCENTAGE),
+                        ("tank2usagePercent", "bulktank2_pct", None, PERCENTAGE),
+                        ("tank1substance",    "bulktank1_sub", None, None),
+                        ("tank2substance",    "bulktank2_sub", None, None),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQLaundryStateSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, uid,
+                                _camel_to_words(state_key), state_key, uid,
                             ) if dev_cls is None and unit is None else SmartHQServiceSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, dev_cls, unit, uid,
+                                _camel_to_words(state_key), state_key, dev_cls, unit, uid,
                             ))
                             existing_uids.add(uid)
 
                 # ── outdoorunit.info sensors ─────────────────────────────────
                 elif stype == OUTDOORUNIT_INFO_SERVICE:
-                    for state_key, label_suffix, uid_sfx in [
-                        ("modelNumber",  "Outdoor Unit Model",  "outdoor_model"),
-                        ("serialNumber", "Outdoor Unit Serial", "outdoor_serial"),
+                    for state_key, uid_sfx in [
+                        ("modelNumber",  "outdoor_model"),
+                        ("serialNumber", "outdoor_serial"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQServiceSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key,
+                                _camel_to_words(state_key), state_key,
                                 None, None, uid,
                                 entity_category=EntityCategory.DIAGNOSTIC,
                             ))
@@ -1360,196 +1430,195 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
                 # ── smartdispense sensors ─────────────────────────────────────
                 elif stype == SMARTDISPENSE_SERVICE:
-                    for state_key, label_suffix, uid_sfx in [
-                        ("level",            "Detergent Level",    "smartdisp_level"),
-                        ("substance",        "Substance",          "smartdisp_substance"),
-                        ("cyclesRemaining",  "Cycles Remaining",   "smartdisp_cycles"),
-                        ("dosing",           "Dosing",             "smartdisp_dosing"),
+                    for state_key, uid_sfx in [
+                        ("level",           "smartdisp_level"),
+                        ("substance",       "smartdisp_substance"),
+                        ("cyclesRemaining", "smartdisp_cycles"),
+                        ("dosing",          "smartdisp_dosing"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQLaundryStateSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, uid,
+                                _camel_to_words(state_key), state_key, uid,
                             ))
                             existing_uids.add(uid)
 
                 # ── cooking.oven.probe.temperature sensors ────────────────────
                 elif stype == COOKING_OVEN_PROBE_TEMP_SERVICE:
-                    dom_label = dom.split(".")[-1].replace("_", " ").title() if dom else ""
-                    for state_key, label_sfx, uid_sfx in [
-                        ("probeUpperDisplayTemperature", f"{dom_label} Upper Probe Temp".strip(), "probe_upper_temp"),
-                        ("probeLowerDisplayTemperature", f"{dom_label} Lower Probe Temp".strip(), "probe_lower_temp"),
+                    for state_key, uid_sfx in [
+                        ("probeUpperDisplayTemperature", "probe_upper_temp"),
+                        ("probeLowerDisplayTemperature", "probe_lower_temp"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQServiceSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_sfx, state_key,
+                                _camel_to_words(state_key), state_key,
                                 SensorDeviceClass.TEMPERATURE, UnitOfTemperature.FAHRENHEIT, uid,
                             ))
                             existing_uids.add(uid)
 
                 # ── cooking.burner.status.v1 sensors ─────────────────────────
                 elif stype == COOKING_BURNER_STATUS_SERVICE:
-                    for state_key, label_suffix, uid_sfx in [
-                        ("cooktopStatus", "Cooktop Status", "burner_status"),
-                        ("energySource",  "Energy Source",  "burner_energy_src"),
+                    for state_key, uid_sfx in [
+                        ("cooktopStatus", "burner_status"),
+                        ("energySource",  "burner_energy_src"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQLaundryStateSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, uid,
+                                _camel_to_words(state_key), state_key, uid,
                             ))
                             existing_uids.add(uid)
 
                 # ── cooking.advantium sensors ─────────────────────────────────
                 elif stype == COOKING_ADVANTIUM_SERVICE:
-                    for state_key, label_suffix, uid_sfx, dev_cls, unit in [
-                        ("advantiumCookMode",        "Cook Mode",          "adv_cook_mode",    None, None),
-                        ("cookAction",               "Cook Action",        "adv_cook_action",  None, None),
-                        ("preheatStatus",            "Preheat Status",     "adv_preheat",      None, None),
-                        ("targetTemperatureFahrenheit", "Target Temp",     "adv_target_temp",  SensorDeviceClass.TEMPERATURE, UnitOfTemperature.FAHRENHEIT),
+                    for state_key, uid_sfx, dev_cls, unit in [
+                        ("advantiumCookMode",           "adv_cook_mode",   None,                          None),
+                        ("cookAction",                  "adv_cook_action", None,                          None),
+                        ("preheatStatus",               "adv_preheat",     None,                          None),
+                        ("targetTemperatureFahrenheit", "adv_target_temp", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.FAHRENHEIT),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQLaundryStateSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, uid,
+                                _camel_to_words(state_key), state_key, uid,
                             ) if dev_cls is None else SmartHQServiceSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, dev_cls, unit, uid,
+                                _camel_to_words(state_key), state_key, dev_cls, unit, uid,
                             ))
                             existing_uids.add(uid)
 
                 # ── espressomaker.v1 sensors ──────────────────────────────────
                 elif stype == ESPRESSOMAKER_SERVICE:
-                    for state_key, label_suffix, uid_sfx, dev_cls, unit in [
-                        ("runStatus",            "Run Status",         "espresso_status",   None, None),
-                        ("brewType",             "Brew Type",          "espresso_brew_type",None, None),
-                        ("brewTemperature",      "Brew Temperature",   "espresso_brew_temp",SensorDeviceClass.TEMPERATURE, UnitOfTemperature.CELSIUS),
-                        ("volume",               "Volume",             "espresso_volume",   None, None),
-                        ("grindTime",            "Grind Time",         "espresso_grind",    None, None),
-                        ("lifetimeCoffeeGround", "Lifetime Ground",    "espresso_lifetime", None, None),
+                    for state_key, uid_sfx, dev_cls, unit in [
+                        ("runStatus",            "espresso_status",   None,                          None),
+                        ("brewType",             "espresso_brew_type",None,                          None),
+                        ("brewTemperature",      "espresso_brew_temp",SensorDeviceClass.TEMPERATURE, UnitOfTemperature.CELSIUS),
+                        ("volume",               "espresso_volume",   None,                          None),
+                        ("grindTime",            "espresso_grind",    None,                          None),
+                        ("lifetimeCoffeeGround", "espresso_lifetime", None,                          None),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQLaundryStateSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, uid,
+                                _camel_to_words(state_key), state_key, uid,
                             ) if dev_cls is None else SmartHQServiceSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, dev_cls, unit, uid,
+                                _camel_to_words(state_key), state_key, dev_cls, unit, uid,
                             ))
                             existing_uids.add(uid)
 
                 # ── mixer.v1 sensors ──────────────────────────────────────────
                 elif stype == MIXER_SERVICE:
-                    for state_key, label_suffix, uid_sfx in [
-                        ("runStatus",  "Run Status",  "mixer_status"),
-                        ("speed",      "Speed",       "mixer_speed"),
-                        ("direction",  "Direction",   "mixer_direction"),
+                    for state_key, uid_sfx in [
+                        ("runStatus",  "mixer_status"),
+                        ("speed",      "mixer_speed"),
+                        ("direction",  "mixer_direction"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQLaundryStateSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, uid,
+                                _camel_to_words(state_key), state_key, uid,
                             ))
                             existing_uids.add(uid)
 
                 # ── pizzaoven.state sensors ───────────────────────────────────
                 elif stype == PIZZAOVEN_STATE_SERVICE:
-                    for state_key, label_suffix, uid_sfx, dev_cls, unit in [
-                        ("operatingState",      "Operating State",        "pzo_op_state",      None, None),
-                        ("menuSelection",       "Menu Selection",         "pzo_menu",          None, None),
-                        ("timerState",          "Timer State",            "pzo_timer_state",   None, None),
-                        ("currentTimeRemaining","Time Remaining",         "pzo_time_remaining",None, None),
-                        ("domeFrontTemperature","Dome Front Temp",        "pzo_dome_front",    SensorDeviceClass.TEMPERATURE, UnitOfTemperature.FAHRENHEIT),
-                        ("domeRearTemperature", "Dome Rear Temp",         "pzo_dome_rear",     SensorDeviceClass.TEMPERATURE, UnitOfTemperature.FAHRENHEIT),
-                        ("stoneFrontTemperature","Stone Front Temp",      "pzo_stone_front",   SensorDeviceClass.TEMPERATURE, UnitOfTemperature.FAHRENHEIT),
-                        ("stoneRearTemperature","Stone Rear Temp",        "pzo_stone_rear",    SensorDeviceClass.TEMPERATURE, UnitOfTemperature.FAHRENHEIT),
+                    for state_key, uid_sfx, dev_cls, unit in [
+                        ("operatingState",       "pzo_op_state",       None,                          None),
+                        ("menuSelection",        "pzo_menu",           None,                          None),
+                        ("timerState",           "pzo_timer_state",    None,                          None),
+                        ("currentTimeRemaining", "pzo_time_remaining", None,                          None),
+                        ("domeFrontTemperature", "pzo_dome_front",     SensorDeviceClass.TEMPERATURE, UnitOfTemperature.FAHRENHEIT),
+                        ("domeRearTemperature",  "pzo_dome_rear",      SensorDeviceClass.TEMPERATURE, UnitOfTemperature.FAHRENHEIT),
+                        ("stoneFrontTemperature","pzo_stone_front",    SensorDeviceClass.TEMPERATURE, UnitOfTemperature.FAHRENHEIT),
+                        ("stoneRearTemperature", "pzo_stone_rear",     SensorDeviceClass.TEMPERATURE, UnitOfTemperature.FAHRENHEIT),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQLaundryStateSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, uid,
+                                _camel_to_words(state_key), state_key, uid,
                             ) if dev_cls is None else SmartHQServiceSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, dev_cls, unit, uid,
+                                _camel_to_words(state_key), state_key, dev_cls, unit, uid,
                             ))
                             existing_uids.add(uid)
 
                 # ── sourdoughstarter.v1 sensors ───────────────────────────────
                 elif stype == SOURDOUGHSTARTER_SERVICE:
-                    for state_key, label_suffix, uid_sfx in [
-                        ("state",         "State",          "sourdough_state"),
-                        ("mode",          "Mode",           "sourdough_mode"),
-                        ("goalTimeHours", "Goal Time Hours","sourdough_goal_h"),
-                        ("goalTimeMinutes","Goal Time Min", "sourdough_goal_m"),
-                        ("flourRatio",    "Flour Ratio",    "sourdough_flour"),
-                        ("waterRatio",    "Water Ratio",    "sourdough_water"),
-                        ("starterRatio",  "Starter Ratio",  "sourdough_starter"),
+                    for state_key, uid_sfx in [
+                        ("state",          "sourdough_state"),
+                        ("mode",           "sourdough_mode"),
+                        ("goalTimeHours",  "sourdough_goal_h"),
+                        ("goalTimeMinutes","sourdough_goal_m"),
+                        ("flourRatio",     "sourdough_flour"),
+                        ("waterRatio",     "sourdough_water"),
+                        ("starterRatio",   "sourdough_starter"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQLaundryStateSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, uid,
+                                _camel_to_words(state_key), state_key, uid,
                             ))
                             existing_uids.add(uid)
 
                 # ── cooktop.closedloop sensors ────────────────────────────────
                 elif stype == COOKTOP_CLOSEDLOOP_SERVICE:
-                    for state_key, label_suffix, uid_sfx in [
-                        ("primaryDeviceStatus", "Primary Device Status",  "cl_primary_status"),
-                        ("primaryDeviceType",   "Primary Device Type",    "cl_primary_type"),
-                        ("primaryDeviceFamily", "Primary Device Family",  "cl_primary_family"),
-                        ("primaryShortId",      "Primary Short ID",       "cl_primary_id"),
-                        ("secondaryDeviceStatus", "Secondary Device Status", "cl_secondary_status"),
-                        ("secondaryDeviceFamily", "Secondary Device Family", "cl_secondary_family"),
-                        ("secondaryShortId",      "Secondary Short ID",      "cl_secondary_id"),
+                    for state_key, uid_sfx in [
+                        ("primaryDeviceStatus",   "cl_primary_status"),
+                        ("primaryDeviceType",     "cl_primary_type"),
+                        ("primaryDeviceFamily",   "cl_primary_family"),
+                        ("primaryShortId",        "cl_primary_id"),
+                        ("secondaryDeviceStatus", "cl_secondary_status"),
+                        ("secondaryDeviceFamily", "cl_secondary_family"),
+                        ("secondaryShortId",      "cl_secondary_id"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQLaundryStateSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, uid,
+                                _camel_to_words(state_key), state_key, uid,
                             ))
                             existing_uids.add(uid)
 
                 # ── cooktop.sousvide sensors ──────────────────────────────────
                 elif stype == COOKTOP_SOUSVIDE_SERVICE:
-                    for state_key, label_suffix, uid_sfx in [
-                        ("clcCurrentTemperature",    "Current Temperature",    "sv_current_temp"),
-                        ("clcTargetTemperature",     "Target Temperature",     "sv_target_temp"),
-                        ("closedLoopCookingDeviceBattery", "Device Battery",   "sv_battery"),
-                        ("bluetoothConnectionStatus", "BT Connection Status",  "sv_bt_conn"),
-                        ("bluetoothPairedStatus",    "BT Paired Status",       "sv_bt_paired"),
-                        ("elapsedClosedLoopCookingTime", "Elapsed Cook Time",  "sv_elapsed_time"),
+                    for state_key, uid_sfx in [
+                        ("clcCurrentTemperature",          "sv_current_temp"),
+                        ("clcTargetTemperature",           "sv_target_temp"),
+                        ("closedLoopCookingDeviceBattery", "sv_battery"),
+                        ("bluetoothConnectionStatus",      "sv_bt_conn"),
+                        ("bluetoothPairedStatus",          "sv_bt_paired"),
+                        ("elapsedClosedLoopCookingTime",   "sv_elapsed_time"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQLaundryStateSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, uid,
+                                _camel_to_words(state_key), state_key, uid,
                             ))
                             existing_uids.add(uid)
 
                 # ── oven.flextimer sensors ────────────────────────────────────
                 elif stype == OVEN_FLEXTIMER_SERVICE:
-                    for state_key, label_suffix, uid_sfx in [
-                        ("cookTimeTotalDuration", "Cook Time Duration",    "flextimer_duration"),
-                        ("addSubtractStatus",     "Add/Subtract Status",   "flextimer_addsubtract"),
-                        ("expirationStatus",      "Expiration Status",     "flextimer_expiry"),
+                    for state_key, uid_sfx in [
+                        ("cookTimeTotalDuration", "flextimer_duration"),
+                        ("addSubtractStatus",     "flextimer_addsubtract"),
+                        ("expirationStatus",      "flextimer_expiry"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQLaundryStateSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, uid,
+                                _camel_to_words(state_key), state_key, uid,
                             ))
                             existing_uids.add(uid)
 
@@ -1559,26 +1628,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     if uid not in existing_uids:
                         entities.append(SmartHQLaundryStateSensor(
                             hass, entry, device_id, service_id, dev_name,
-                            "Pet Hair Disabled", "disabled", uid,
+                            _camel_to_words("disabled"), "disabled", uid,
                         ))
                         existing_uids.add(uid)
 
                 # ── dryer.config.cycle.v1 sensors ────────────────────────────
                 elif stype == DRYER_CONFIG_CYCLE_V1_SERVICE:
-                    for state_key, label_suffix, uid_sfx in [
-                        ("optionHeatHighMinutes",   "Heat High Minutes",   "dryercfg_heat_high_min"),
-                        ("optionHeatMediumMinutes", "Heat Medium Minutes", "dryercfg_heat_med_min"),
-                        ("optionHeatLowMinutes",    "Heat Low Minutes",    "dryercfg_heat_low_min"),
-                        ("optionHeatNoneMinutes",   "Heat None Minutes",   "dryercfg_heat_none_min"),
-                        ("optionHeatHighCelsiusConverted",   "Heat High Celsius",   "dryercfg_heat_high_c"),
-                        ("optionHeatLowCelsiusConverted",    "Heat Low Celsius",    "dryercfg_heat_low_c"),
-                        ("disabled",               "Disabled",            "dryercfg_disabled"),
+                    for state_key, uid_sfx in [
+                        ("optionHeatHighMinutes",          "dryercfg_heat_high_min"),
+                        ("optionHeatMediumMinutes",        "dryercfg_heat_med_min"),
+                        ("optionHeatLowMinutes",           "dryercfg_heat_low_min"),
+                        ("optionHeatNoneMinutes",          "dryercfg_heat_none_min"),
+                        ("optionHeatHighCelsiusConverted", "dryercfg_heat_high_c"),
+                        ("optionHeatLowCelsiusConverted",  "dryercfg_heat_low_c"),
+                        ("disabled",                      "dryercfg_disabled"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQLaundryStateSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, uid,
+                                _camel_to_words(state_key), state_key, uid,
                             ))
                             existing_uids.add(uid)
 
@@ -1588,29 +1657,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     if uid not in existing_uids:
                         entities.append(SmartHQLaundryStateSensor(
                             hass, entry, device_id, service_id, dev_name,
-                            "My Cycles", "myCycles", uid,
+                            _camel_to_words("myCycles"), "myCycles", uid,
                         ))
                         existing_uids.add(uid)
 
                 # ── washer.config.cycle.v1 sensors ───────────────────────────
                 elif stype == WASHER_CONFIG_CYCLE_V1_SERVICE:
-                    for state_key, label_suffix, uid_sfx in [
-                        ("cycleWashColors",    "Wash Colors Minutes",    "washercfg_colors"),
-                        ("cycleWashWhites",    "Wash Whites Minutes",    "washercfg_whites"),
-                        ("cycleWashTowels",    "Wash Towels Minutes",    "washercfg_towels"),
-                        ("cycleWashDelicates", "Wash Delicates Minutes", "washercfg_delicates"),
-                        ("cycleWashDeepClean", "Wash Deep Clean Minutes","washercfg_deepclean"),
-                        ("cycleWashSpeed",     "Wash Speed Minutes",     "washercfg_speed"),
-                        ("cycleWashCold",      "Spin Speed Cold RPM",    "washercfg_spin_cold"),
-                        ("cycleWashWarm",      "Spin Speed Warm RPM",    "washercfg_spin_warm"),
-                        ("cycleWashHot",       "Spin Speed Hot RPM",     "washercfg_spin_hot"),
-                        ("disabled",           "Disabled",               "washercfg_disabled"),
+                    for state_key, uid_sfx in [
+                        ("cycleWashColors",    "washercfg_colors"),
+                        ("cycleWashWhites",    "washercfg_whites"),
+                        ("cycleWashTowels",    "washercfg_towels"),
+                        ("cycleWashDelicates", "washercfg_delicates"),
+                        ("cycleWashDeepClean", "washercfg_deepclean"),
+                        ("cycleWashSpeed",     "washercfg_speed"),
+                        ("cycleWashCold",      "washercfg_spin_cold"),
+                        ("cycleWashWarm",      "washercfg_spin_warm"),
+                        ("cycleWashHot",       "washercfg_spin_hot"),
+                        ("disabled",           "washercfg_disabled"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQLaundryStateSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, uid,
+                                _camel_to_words(state_key), state_key, uid,
                             ))
                             existing_uids.add(uid)
 
@@ -1620,123 +1689,116 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     if uid not in existing_uids:
                         entities.append(SmartHQLaundryStateSensor(
                             hass, entry, device_id, service_id, dev_name,
-                            "Stored Cycles", "storedCycles", uid,
+                            _camel_to_words("storedCycles"), "storedCycles", uid,
                         ))
                         existing_uids.add(uid)
 
                 # ── demandresponse.state.v1 sensors ──────────────────────────
                 elif stype == DEMANDRESPONSE_STATE_V1_SERVICE:
-                    for state_key, label_suffix, uid_sfx in [
-                        ("systemStatus", "DR System Status", "dr_system_status"),
-                        ("energyState",  "DR Energy State",  "dr_energy_state"),
-                        ("eventId",      "DR Event ID",      "dr_event_id"),
+                    for state_key, uid_sfx in [
+                        ("systemStatus", "dr_system_status"),
+                        ("energyState",  "dr_energy_state"),
+                        ("eventId",      "dr_event_id"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQLaundryStateSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, uid,
+                                _camel_to_words(state_key), state_key, uid,
                             ))
                             existing_uids.add(uid)
 
                 # ── oven.menutree sensors ─────────────────────────────────────
                 elif stype == OVEN_MENUTREE_SERVICE:
-                    for state_key, label_suffix, uid_sfx in [
-                        ("sequence1",       "Menu Sequence 1",      "menutree_seq1"),
-                        ("sequence2",       "Menu Sequence 2",      "menutree_seq2"),
-                        ("uuidSelection1",  "Menu UUID Selection 1","menutree_uuid1"),
-                        ("uuidSelection2",  "Menu UUID Selection 2","menutree_uuid2"),
-                        ("shortnameCavity1","Menu Shortname Cavity 1","menutree_short1"),
-                        ("shortnameCavity2","Menu Shortname Cavity 2","menutree_short2"),
+                    for state_key, uid_sfx in [
+                        ("sequence1",        "menutree_seq1"),
+                        ("sequence2",        "menutree_seq2"),
+                        ("uuidSelection1",   "menutree_uuid1"),
+                        ("uuidSelection2",   "menutree_uuid2"),
+                        ("shortnameCavity1", "menutree_short1"),
+                        ("shortnameCavity2", "menutree_short2"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQLaundryStateSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, uid,
+                                _camel_to_words(state_key), state_key, uid,
                             ))
                             existing_uids.add(uid)
 
                 # ── laundry.commercial.v1 sensors ────────────────────────────
                 elif stype == LAUNDRY_COMMERCIAL_V1_SERVICE:
-                    for state_key, label_suffix, uid_sfx in [
-                        ("machineStatus",    "Machine Status",    "commercial_machine_status"),
-                        ("phaseCloud",       "Phase Cloud",       "commercial_phase_cloud"),
-                        ("phaseDevice",      "Phase Device",      "commercial_phase_device"),
-                        ("selectedCycle",    "Selected Cycle",    "commercial_selected_cycle"),
-                        ("heatOption",       "Heat Option",       "commercial_heat_option"),
-                        ("soilOption",       "Soil Option",       "commercial_soil_option"),
-                        ("temperatureOption","Temperature Option","commercial_temp_option"),
+                    for state_key, uid_sfx in [
+                        ("machineStatus",    "commercial_machine_status"),
+                        ("phaseCloud",       "commercial_phase_cloud"),
+                        ("phaseDevice",      "commercial_phase_device"),
+                        ("selectedCycle",    "commercial_selected_cycle"),
+                        ("heatOption",       "commercial_heat_option"),
+                        ("soilOption",       "commercial_soil_option"),
+                        ("temperatureOption","commercial_temp_option"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQLaundryStateSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, uid,
+                                _camel_to_words(state_key), state_key, uid,
                             ))
                             existing_uids.add(uid)
 
                 # ── laundry.downloadablecycle sensors ────────────────────────
                 elif stype == LAUNDRY_DOWNLOADABLECYCLE_SERVICE:
-                    for state_key, label_suffix, uid_sfx in [
-                        ("downloadableCycleSelected", "Downloadable Cycle Selected", "dlcycle_selected"),
-                        ("featureVersion",            "Feature Version",             "dlcycle_version"),
+                    for state_key, uid_sfx in [
+                        ("downloadableCycleSelected", "dlcycle_selected"),
+                        ("featureVersion",            "dlcycle_version"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQLaundryStateSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, uid,
+                                _camel_to_words(state_key), state_key, uid,
                             ))
                             existing_uids.add(uid)
 
                 elif stype == DEMANDRESPONSE_EVENT_V1_SERVICE:
-                    # demandresponse.event.v1 state:
-                    #   eventId (STRING), curtailmentLevel (INTEGER),
-                    #   temperatureOffset (DOUBLE), eventStatus (ENUM), userOption (ENUM)
-                    for state_key, label_suffix, uid_sfx in [
-                        ("eventId",           "DR Event ID",            "dr_event_id"),
-                        ("curtailmentLevel",  "DR Curtailment Level",   "dr_curtailment"),
-                        ("temperatureOffset", "DR Temperature Offset",  "dr_temp_offset"),
-                        ("eventStatus",       "DR Event Status",        "dr_event_status"),
-                        ("userOption",        "DR User Option",         "dr_user_option"),
+                    for state_key, uid_sfx in [
+                        ("eventId",           "dr_event_id"),
+                        ("curtailmentLevel",  "dr_curtailment"),
+                        ("temperatureOffset", "dr_temp_offset"),
+                        ("eventStatus",       "dr_event_status"),
+                        ("userOption",        "dr_user_option"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQLaundryStateSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, uid,
+                                _camel_to_words(state_key), state_key, uid,
                             ))
                             existing_uids.add(uid)
 
                 elif stype == LAUNDRY_PRICEMENU_V1_SERVICE:
-                    # laundry.pricemenu.v1 state: coin price fields (INTEGER, 0-10000)
-                    # Washer cycles
-                    for state_key, label_suffix, uid_sfx in [
-                        ("cycleWashCold",      "Price Wash Cold",       "pm_wash_cold"),
-                        ("cycleWashWarm",      "Price Wash Warm",       "pm_wash_warm"),
-                        ("cycleWashHot",       "Price Wash Hot",        "pm_wash_hot"),
-                        ("cycleWashDelicates", "Price Wash Delicates",  "pm_wash_delicates"),
-                        ("optionExtraRinse",   "Price Option Extra Rinse", "pm_opt_extra_rinse"),
-                        ("optionSoilLight",    "Price Option Soil Light",  "pm_opt_soil_light"),
-                        ("optionSoilMedium",   "Price Option Soil Medium", "pm_opt_soil_medium"),
-                        ("optionSoilHeavy",    "Price Option Soil Heavy",  "pm_opt_soil_heavy"),
-                        # Dryer heat options
-                        ("optionHeatNone",     "Price Heat None",       "pm_heat_none"),
-                        ("optionHeatLow",      "Price Heat Low",        "pm_heat_low"),
-                        ("optionHeatMedium",   "Price Heat Medium",     "pm_heat_medium"),
-                        ("optionHeatHigh",     "Price Heat High",       "pm_heat_high"),
-                        # Dryer adjustments
-                        ("adjustmentHeatNone", "Price Adjust Heat None",   "pm_adj_heat_none"),
-                        ("adjustmentHeatLow",  "Price Adjust Heat Low",    "pm_adj_heat_low"),
-                        ("adjustmentHeatMedium", "Price Adjust Heat Medium", "pm_adj_heat_med"),
-                        ("adjustmentHeatHigh", "Price Adjust Heat High",   "pm_adj_heat_high"),
+                    for state_key, uid_sfx in [
+                        ("cycleWashCold",        "pm_wash_cold"),
+                        ("cycleWashWarm",        "pm_wash_warm"),
+                        ("cycleWashHot",         "pm_wash_hot"),
+                        ("cycleWashDelicates",   "pm_wash_delicates"),
+                        ("optionExtraRinse",     "pm_opt_extra_rinse"),
+                        ("optionSoilLight",      "pm_opt_soil_light"),
+                        ("optionSoilMedium",     "pm_opt_soil_medium"),
+                        ("optionSoilHeavy",      "pm_opt_soil_heavy"),
+                        ("optionHeatNone",       "pm_heat_none"),
+                        ("optionHeatLow",        "pm_heat_low"),
+                        ("optionHeatMedium",     "pm_heat_medium"),
+                        ("optionHeatHigh",       "pm_heat_high"),
+                        ("adjustmentHeatNone",   "pm_adj_heat_none"),
+                        ("adjustmentHeatLow",    "pm_adj_heat_low"),
+                        ("adjustmentHeatMedium", "pm_adj_heat_med"),
+                        ("adjustmentHeatHigh",   "pm_adj_heat_high"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
                             entities.append(SmartHQLaundryStateSensor(
                                 hass, entry, device_id, service_id, dev_name,
-                                label_suffix, state_key, uid,
+                                _camel_to_words(state_key), state_key, uid,
                             ))
                             existing_uids.add(uid)
 
@@ -1751,7 +1813,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     all_entities = entities + snapshot_entities
     if all_entities:
-        _LOGGER.warning(
+        _LOGGER.debug(
             "[SENSOR_SETUP] Registering %d entities (%d source1 + %d snapshot)",
             len(all_entities), len(entities), len(snapshot_entities),
         )
