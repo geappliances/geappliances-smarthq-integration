@@ -17,6 +17,7 @@ from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME
@@ -298,6 +299,8 @@ class SmartHQFirmwareUpgradeButton(_SmartHQButtonBase):
     """Button to initiate a firmware upgrade."""
 
     _attr_icon = "mdi:update"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
 
     def __init__(self, hass, entry, client, device_id, service_id,
                  dev_name, unique_id):
