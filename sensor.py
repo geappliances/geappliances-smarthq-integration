@@ -1116,10 +1116,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
                 # ── firmware version sensors (hidden by default — diagnostic only) ──
                 elif stype == FIRMWARE_SERVICE:
-                    for state_key, uid_sfx, enabled in [
-                        ("versionCurrent",   "fw_current",   True),
-                        ("versionAvailable", "fw_available", False),
-                        ("upgradeStatus",    "fw_status",    False),
+                    for state_key, uid_sfx in [
+                        ("versionCurrent",   "fw_current"),
+                        ("versionAvailable", "fw_available"),
+                        ("upgradeStatus",    "fw_status"),
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
@@ -1128,7 +1128,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                                 _camel_to_words(state_key), state_key,
                                 None, None, uid,
                                 entity_category=EntityCategory.DIAGNOSTIC,
-                                enabled_default=enabled,
+                                enabled_default=False,
                             ))
                             existing_uids.add(uid)
 
