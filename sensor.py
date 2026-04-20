@@ -25,7 +25,7 @@ import logging
 
 _LOGGER = logging.getLogger(__name__)
 
-from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME, OPTION_SHOW_ALT_TEMPS
+from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME, sdev_prefix, OPTION_SHOW_ALT_TEMPS
 from .dispatcher import SIGNAL_DEVICE_UPDATED
 from .service_registry import (
     TEMPERATURE_SERVICE,
@@ -167,11 +167,20 @@ def _device_info_for(hass: HomeAssistant, entry: ConfigEntry, device_id: str) ->
 def _device_temp_is_f(hass: HomeAssistant, entry: ConfigEntry, device_id: str) -> bool:
     """Return True if the device's temperatureunits service is set to Fahrenheit.
 
-    Inspects the live WS snapshot for a service whose domainType contains
-    'temperatureunits' and checks whether its mode value contains 'fahrenheit'.
-    Falls back to the HA system unit when the service is absent (e.g. devices
-    that have no temperature-unit setting).
+    Priority order:
+    1. hass.data temp-unit cache (set immediately when user changes Temperatureunits select)
+    2. WS snapshot (store) — real-time, populated after first WS update
+    3. coordinator.data — initial REST load
+    4. HA system unit fallback
     """
+    # 1. Immediate cache (updated by SmartHQModeSelect when temperatureunits changes)
+    domain_data = hass.data.get(DOMAIN) or {}
+    entry_data = domain_data.get(entry.entry_id) or {}
+    temp_unit_cache: dict = entry_data.get("temp_unit_cache") or {}
+    if device_id in temp_unit_cache:
+        return temp_unit_cache[device_id]
+
+    # 2. WS snapshot (store) — real-time
     snap = _snapshot_for(hass, entry, device_id)
     for st in (snap.get("services") or {}).values():
         if isinstance(st, dict):
@@ -179,7 +188,21 @@ def _device_temp_is_f(hass: HomeAssistant, entry: ConfigEntry, device_id: str) -
             if "temperatureunits" in dom.lower():
                 mode = str(st.get("mode") or "")
                 return "fahrenheit" in mode.lower()
-    # Fallback: HA system unit
+
+    # 3. coordinator.data — initial REST load
+    bucket = _bucket(hass, entry)
+    coordinator = bucket.get("coordinator")
+    if coordinator and coordinator.data:
+        dev_data = coordinator.data.get(device_id) or {}
+        services_list = (dev_data.get("item") or {}).get("services") or []
+        for svc in services_list:
+            if isinstance(svc, dict):
+                dom = str(svc.get("domainType") or "")
+                if "temperatureunits" in dom.lower():
+                    mode = str((svc.get("state") or {}).get("mode") or "")
+                    return "fahrenheit" in mode.lower()
+
+    # 4. Fallback: HA system unit
     return hass.config.units.temperature_unit == UnitOfTemperature.FAHRENHEIT
 
 
@@ -1063,7 +1086,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     if "measurement" in dom.lower() and "smoker" in sdev.lower():
                         label = "Cavity Temperature"
                     else:
-                        label = _label_for_key("fahrenheit", stype, dom)
+                        _base = _label_for_key("fahrenheit", stype, dom)
+                        _prefix = sdev_prefix(sdev)
+                        label = f"{_prefix} {_base}".strip() if _prefix else _base
 
                     # Single entity whose unit follows the device's temperatureunits
                     # setting at runtime.  Use the legacy °F uid for continuity.

@@ -101,6 +101,7 @@ class SmartHQCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                         else "/config/dryer_services_dump.json" if did.startswith("7d27fcd8")
                         else "/config/washerdryer_services_dump.json" if did.startswith("1bc2476f")
                         else "/config/toasteroven_services_dump.json" if did.startswith("9d2faee3")
+                        else "/config/refrigerator_services_dump.json" if did.startswith("a8a7bcac")
                         else "/config/coffeebrewer_services_dump.json"
                     )
                     _tag = (
@@ -108,6 +109,7 @@ class SmartHQCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                         else "DRYER_DUMP" if did.startswith("7d27fcd8")
                         else "WASHERDRYER_DUMP" if did.startswith("1bc2476f")
                         else "TOASTEROVEN_DUMP" if did.startswith("9d2faee3")
+                        else "REFRIGERATOR_DUMP" if did.startswith("a8a7bcac")
                         else "COFFEE_DUMP"
                     )
                     _dump_data = _json.dumps(svc_raw or [], indent=2, default=str)

@@ -21,7 +21,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME
+from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME, sdev_prefix
 from .dispatcher import SIGNAL_DEVICE_UPDATED
 from .service_registry import (
     TOGGLE_SERVICE,
@@ -66,7 +66,7 @@ def _device_info_for(hass, entry, device_id):
         "sw_version": sw_version,
     }
 
-def _label_for_toggle(dom):
+def _label_for_toggle(dom, sdev: str = ""):
     d = dom.lower()
     if "warm.auto" in d:
         return "Auto Warm", "mdi:fire-alert"
@@ -76,15 +76,19 @@ def _label_for_toggle(dom):
         return "Cavity Light", "mdi:lightbulb"
     if "smoke" in d:
         return "Clear Smoke", "mdi:smoke"
-    return (dom.split(".")[-1].replace("_", " ").title() if dom else "Toggle"), "mdi:toggle-switch"
+    base = dom.split(".")[-1].replace("_", " ").title() if dom else "Toggle"
+    prefix = sdev_prefix(sdev)
+    return (f"{prefix} {base}".strip() if prefix else base), "mdi:toggle-switch"
 
-def _label_for_mode_switch(dom):
+def _label_for_mode_switch(dom, sdev: str = ""):
     d = dom.lower()
     if "brightness" in d or "light" in d:
         return "Cavity Light", "mdi:lightbulb"
     if "lock" in d or "override" in d:
         return "Control Lock", "mdi:lock"
-    return (dom.split(".")[-1].replace("_", " ").title() if dom else "Mode"), "mdi:toggle-switch"
+    base = dom.split(".")[-1].replace("_", " ").title() if dom else "Mode"
+    prefix = sdev_prefix(sdev)
+    return (f"{prefix} {base}".strip() if prefix else base), "mdi:toggle-switch"
 
 
 def _pretty_dom(dom: str) -> str:
@@ -133,7 +137,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
             cmds = svc.get("supportedCommands") or []
 
             if stype == TOGGLE_SERVICE and CMD_TOGGLE_SET in cmds:
-                label, icon = _label_for_toggle(dom)
+                label, icon = _label_for_toggle(dom, svc.get("serviceDeviceType") or "")
                 entities.append(SmartHQToggleSwitch(
                     hass=hass, entry=entry, ws=ws,
                     device_id=device_id, service_id=service_id,
@@ -151,7 +155,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     )
                     continue
                 seen_switch_domains.add(dedup_key)
-                label, icon = _label_for_mode_switch(dom)
+                label, icon = _label_for_mode_switch(dom, svc.get("serviceDeviceType") or "")
                 entities.append(SmartHQModeSwitch(
                     hass=hass, entry=entry, ws=ws,
                     device_id=device_id, service_id=service_id,

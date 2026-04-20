@@ -19,7 +19,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME
+from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME, sdev_prefix
 from .dispatcher import SIGNAL_DEVICE_UPDATED, SIGNAL_COOK_MODE_CHANGED
 from .sensor import _snapshot_for, _dev_payload, _device_info_for, _integer_units_to_ha
 from .service_registry import (
@@ -97,9 +97,12 @@ async def async_setup_entry(hass, entry, async_add_entities):
             if stype == TEMPERATURE_SERVICE and CMD_TEMPERATURE_SET in cmds:
                 if has_cooking_mode:
                     continue
-                min_f = float(cfg.get("fahrenheitMin", 32))
-                max_f = float(cfg.get("fahrenheitMax", 500))
-                label = cfg.get("label") or dom.split(".")[-1].replace("_", " ").title()
+                min_f = float(cfg.get("fahrenheitMinimum") or cfg.get("fahrenheitMin") or 32)
+                max_f = float(cfg.get("fahrenheitMaximum") or cfg.get("fahrenheitMax") or 500)
+                _sdev = svc.get("serviceDeviceType") or ""
+                _base = cfg.get("label") or dom.split(".")[-1].replace("_", " ").title()
+                _prefix = sdev_prefix(_sdev)
+                label = f"{_prefix} {_base}".strip() if _prefix else _base
                 entities.append(SmartHQTemperatureNumber(
                     hass=hass, entry=entry,
                     device_id=device_id, service_id=service_id,
@@ -130,7 +133,10 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 int_units = cfg.get("integerUnits") or ""
                 min_val = float(cfg.get("minimum", 0))
                 max_val = float(cfg.get("maximum", 100))
-                label = cfg.get("label") or dom.split(".")[-1].replace("_", " ").title()
+                _sdev = svc.get("serviceDeviceType") or ""
+                _base = cfg.get("label") or dom.split(".")[-1].replace("_", " ").title()
+                _prefix = sdev_prefix(_sdev)
+                label = f"{_prefix} {_base}".strip() if _prefix else _base
                 ha_unit, _ = _integer_units_to_ha(int_units)
                 entities.append(SmartHQIntegerNumber(
                     hass=hass, entry=entry,
@@ -189,33 +195,75 @@ class _SmartHQNumberBase(NumberEntity):
 
 
 class SmartHQTemperatureNumber(_SmartHQNumberBase):
-    """Writable temperature service number entity."""
+    """Writable temperature service number entity.
+
+    Unit follows the device's temperatureunits setting dynamically.
+    Internal storage is always °F; values are converted on the fly.
+    """
 
     _attr_mode = NumberMode.BOX
-    _attr_native_unit_of_measurement = UnitOfTemperature.FAHRENHEIT
     _attr_device_class = "temperature"
     _attr_native_step = 1.0
 
     def __init__(self, hass, entry, device_id, service_id,
                  dev_name, label, min_f, max_f, unique_id):
         super().__init__(hass, entry, device_id, service_id, dev_name, label, unique_id)
-        self._attr_native_min_value = min_f
-        self._attr_native_max_value = max_f
+        self._min_f = min_f
+        self._max_f = max_f
+
+    # ------------------------------------------------------------------
+    # Unit helpers
+    # ------------------------------------------------------------------
+    def _is_f(self) -> bool:
+        from .sensor import _device_temp_is_f
+        return _device_temp_is_f(self.hass, self._entry, self._device_id)
+
+    def _f_to_display(self, f: float) -> float:
+        if self._is_f():
+            return round(f, 1)
+        return round((f - 32) * 5 / 9, 1)
+
+    def _display_to_f(self, v: float) -> float:
+        if self._is_f():
+            return v
+        return round(v * 9 / 5 + 32, 1)
+
+    # ------------------------------------------------------------------
+    # HA properties
+    # ------------------------------------------------------------------
+    @property
+    def native_unit_of_measurement(self) -> str:
+        return UnitOfTemperature.FAHRENHEIT if self._is_f() else UnitOfTemperature.CELSIUS
+
+    @property
+    def native_min_value(self) -> float:
+        return self._f_to_display(self._min_f)
+
+    @property
+    def native_max_value(self) -> float:
+        return self._f_to_display(self._max_f)
 
     @property
     def native_value(self) -> float | None:
-        return self._get_state().get("fahrenheit")
+        raw = self._get_state().get("fahrenheit")
+        if raw is None:
+            return None
+        try:
+            return self._f_to_display(float(raw))
+        except (TypeError, ValueError):
+            return None
 
     async def async_set_native_value(self, value: float) -> None:
         client = _bucket(self.hass, self._entry).get("client")
         if client:
             snap = _snapshot_for(self.hass, self._entry, self._device_id)
             svc_dict = (snap.get("services") or {}).get(self._service_id) or {}
+            f_value = self._display_to_f(value)
             await client.async_send_service_command(
                 device_id=self._device_id,
                 service=svc_dict,
                 command_type=CMD_TEMPERATURE_SET,
-                command_params={"fahrenheit": value},
+                command_params={"fahrenheit": f_value},
             )
         self.async_write_ha_state()
 

@@ -19,7 +19,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME
+from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME, sdev_prefix
 from .dispatcher import SIGNAL_DEVICE_UPDATED, SIGNAL_COOK_MODE_CHANGED
 from .service_registry import (
     MODE_SERVICE,
@@ -142,6 +142,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     device_id=device_id, service_id=service_id,
                     dev_name=dev_name, dom=dom, cfg=cfg,
                     unique_id=make_unique_id(device_id, service_id, "mode_select"),
+                    sdev=svc.get("serviceDeviceType") or "",
                 ))
 
             # ── cooking mode (collect for aggregation) ──────────────────────
@@ -379,17 +380,20 @@ class SmartHQModeSelect(SelectEntity):
     _attr_has_entity_name = True
 
     def __init__(self, hass, entry, client, device_id, service_id,
-                 dev_name, dom, cfg, unique_id):
+                 dev_name, dom, cfg, unique_id, sdev: str = ""):
         self.hass = hass
         self._entry = entry
         self._client = client
         self._device_id = device_id
         self._service_id = service_id
         self._attr_unique_id = unique_id
+        self._dom = dom  # store for temperatureunits detection
 
-        # Label from domain tail
+        # Label from domain tail, with optional serviceDeviceType prefix
         dom_tail = dom.split(".")[-1].replace("_", " ").title() if dom else "Mode"
-        self._attr_name = f"{dev_name} {dom_tail}"
+        _prefix = sdev_prefix(sdev)
+        label = f"{_prefix} {dom_tail}".strip() if _prefix else dom_tail
+        self._attr_name = f"{dev_name} {label}"
         self._attr_icon = None
 
         # Build initial options from coordinator config
@@ -453,6 +457,19 @@ class SmartHQModeSelect(SelectEntity):
         token = self._name_to_token.get(option) or (option if "." in option else None)
         if self._client and token:
             await self._client.async_set_mode(self._device_id, self._service_id, token)
+        # If this is the temperatureunits select, update the temp_unit_cache
+        # immediately so all temperature entities re-render with the new unit
+        # without waiting for the WS confirmation round-trip.
+        if "temperatureunits" in (self._dom or "").lower():
+            # Must access hass.data directly (not via `or {}`) to actually persist
+            domain_data = self.hass.data.setdefault(DOMAIN, {})
+            entry_data = domain_data.setdefault(self._entry.entry_id, {})
+            cache = entry_data.setdefault("temp_unit_cache", {})
+            cache[self._device_id] = "fahrenheit" in (token or "").lower()
+            async_dispatcher_send(
+                self.hass,
+                SIGNAL_DEVICE_UPDATED.format(device_id=self._device_id),
+            )
         self.schedule_update_ha_state()
 
     async def async_added_to_hass(self) -> None:
