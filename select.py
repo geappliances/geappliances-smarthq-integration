@@ -141,7 +141,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
             if stype == TEMPERATURE_SERVICE and CMD_TEMPERATURE_SET in cmds:
                 min_f = cfg.get("fahrenheitMinimum") or cfg.get("fahrenheitMin")
                 max_f = cfg.get("fahrenheitMaximum") or cfg.get("fahrenheitMax")
-                if min_f is not None and max_f is not None and (float(max_f) - float(min_f)) <= 30:
+                if min_f is not None and max_f is not None and (float(max_f) - float(min_f)) <= 150:
                     _sdev = svc.get("serviceDeviceType") or ""
                     _base = cfg.get("label") or dom.split(".")[-1].replace("_", " ").title()
                     _prefix = sdev_prefix(_sdev)

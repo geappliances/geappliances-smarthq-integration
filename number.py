@@ -99,9 +99,10 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     continue
                 min_f = float(cfg.get("fahrenheitMinimum") or cfg.get("fahrenheitMin") or 32)
                 max_f = float(cfg.get("fahrenheitMaximum") or cfg.get("fahrenheitMax") or 500)
-                # Small integer range (≤30°F span) → handled by SmartHQTemperatureSetpointSelect
-                # in select.py. Skip here to avoid duplicate entities.
-                if (max_f - min_f) <= 30:
+                # Range ≤150°F span → handled by SmartHQTemperatureSetpointSelect in select.py
+                # (Fresh Food 8°F, Freezer 11°F, Hot Water 95°F → select)
+                # Wide ranges like oven (≥150°F) remain as number entities.
+                if (max_f - min_f) <= 150:
                     continue
                 _sdev = svc.get("serviceDeviceType") or ""
                 _base = cfg.get("label") or dom.split(".")[-1].replace("_", " ").title()
