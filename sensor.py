@@ -45,6 +45,8 @@ from .service_registry import (
     POWER_USAGE_SERVICE,
     DELAYWINDOW_SERVICE,
     BREW_MODE_SERVICE,
+    COFFEEBREWER_V1_SERVICE,
+    COFFEEBREWER_V2_SERVICE,
     DISHWASHER_STATE_V1_SERVICE,
     DISHWASHER_RINSE_AGENT_SERVICE,
     DISHDRAWER_STATE_LEGACY_SERVICE,
@@ -464,8 +466,13 @@ class SmartHQSnapshotSensor(SensorEntity):
 
     @property
     def device_class(self) -> Optional[SensorDeviceClass]:
+        # Temperature keys: do NOT return SensorDeviceClass.TEMPERATURE.
+        # If TEMPERATURE is returned, HA auto-converts native_value to the HA
+        # system unit (e.g. °F → °C on metric systems), overriding the device's
+        # own temperatureunits setting. Leaving device_class as None disables
+        # that auto-conversion so the unit/value we compute is displayed as-is.
         if self._is_temp_key:
-            return SensorDeviceClass.TEMPERATURE
+            return None
         return self._fixed_device_class
 
     @property
@@ -678,6 +685,9 @@ class SmartHQTempSensor(SmartHQServiceSensor):
     A single entity is created per temperature service (replacing the old
     separate °C / °F pair).  The sensor always reads the Fahrenheit snapshot
     key and converts the value on-the-fly when the device is in Celsius mode.
+
+    For devices that don't send WS updates (e.g. Refrigerator), falls back to
+    the initial state from coordinator.data.
     """
 
     def __init__(
@@ -694,9 +704,28 @@ class SmartHQTempSensor(SmartHQServiceSensor):
             unique_id,
         )
 
-    @property
-    def device_class(self) -> SensorDeviceClass:
-        return SensorDeviceClass.TEMPERATURE
+    # device_class is intentionally NOT set to SensorDeviceClass.TEMPERATURE.
+    # See SmartHQRawTempSensor for the explanation.
+
+    def _get_state(self) -> dict:
+        """Return service state: WS snapshot first, then coordinator.data fallback."""
+        # 1. WS snapshot (real-time)
+        snap = _snapshot_for(self.hass, self._entry, self._device_id)
+        ws_st = (snap.get("services") or {}).get(self._service_id) or {}
+        if ws_st and "fahrenheit" in ws_st:
+            return ws_st
+        # 2. coordinator.data fallback (for devices with no WS updates, e.g. Refrigerator)
+        bucket = _bucket(self.hass, self._entry)
+        coordinator = bucket.get("coordinator")
+        if coordinator and coordinator.data:
+            dev_data = coordinator.data.get(self._device_id) or {}
+            services_list = (dev_data.get("item") or {}).get("services") or []
+            for svc in services_list:
+                if isinstance(svc, dict):
+                    sid = svc.get("id") or svc.get("serviceId") or ""
+                    if sid == self._service_id:
+                        return svc.get("state") or {}
+        return ws_st
 
     @property
     def native_unit_of_measurement(self) -> str:
@@ -753,9 +782,12 @@ class SmartHQRawTempSensor(SmartHQServiceSensor):
         )
         self._raw_unit = raw_unit  # UnitOfTemperature.FAHRENHEIT or CELSIUS
 
-    @property
-    def device_class(self) -> SensorDeviceClass:
-        return SensorDeviceClass.TEMPERATURE
+    # device_class is intentionally NOT set to SensorDeviceClass.TEMPERATURE.
+    # If device_class=TEMPERATURE is used, HA auto-converts the value to the
+    # HA system unit (e.g. °F → °C on metric systems), which overrides the
+    # device's own temperatureunits setting. By leaving device_class as None,
+    # HA does not convert the value and the display unit exactly matches the
+    # device's own temperature unit setting.
 
     @property
     def native_unit_of_measurement(self) -> str:
@@ -1398,6 +1430,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                                     dev_cls, unit, uid,
                                 ))
                             existing_uids.add(uid)
+
+                # ── coffeebrewer.v1 / .v2 current temperature sensor ─────────
+                elif stype in (COFFEEBREWER_V1_SERVICE, COFFEEBREWER_V2_SERVICE):
+                    uid = make_unique_id(device_id, service_id, "brew_current_temp")
+                    if uid not in existing_uids:
+                        entities.append(SmartHQRawTempSensor(
+                            hass, entry, device_id, service_id, dev_name,
+                            "Brew Temperature", "temperatureFahrenheit",
+                            UnitOfTemperature.FAHRENHEIT, uid,
+                        ))
+                        existing_uids.add(uid)
 
                 # ── dishwasher.state.v1 sensors ─────────────────────────────
                 elif stype == DISHWASHER_STATE_V1_SERVICE:
