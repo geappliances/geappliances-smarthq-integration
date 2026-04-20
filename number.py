@@ -463,17 +463,14 @@ class _SmartHQSmokerBase(NumberEntity):
     def _device_is_f(self) -> bool:
         """Return True if the device's temperatureunits service is set to Fahrenheit.
 
-        Falls back to the HA system unit when the service is not present.
+        Delegates to sensor._device_temp_is_f which checks (in order):
+          1. temp_unit_cache  (set immediately on Temperatureunits select change)
+          2. WS snapshot
+          3. coordinator.data
+          4. HA system unit fallback
         """
-        snap = _snapshot_for(self.hass, self._entry, self._device_id)
-        for st in (snap.get("services") or {}).values():
-            if isinstance(st, dict):
-                dom = str(st.get("domainType") or "")
-                if "temperatureunits" in dom.lower():
-                    mode = str(st.get("mode") or "")
-                    return "fahrenheit" in mode.lower()
-        # Fallback: use HA system unit
-        return self.hass.config.units.temperature_unit == UnitOfTemperature.FAHRENHEIT
+        from .sensor import _device_temp_is_f
+        return _device_temp_is_f(self.hass, self._entry, self._device_id)
 
 
 class SmartHQSmokerTempNumber(_SmartHQSmokerBase):

@@ -726,6 +726,67 @@ class SmartHQTempSensor(SmartHQServiceSensor):
         return bool(st) and not st.get("disabled") and "fahrenheit" in st
 
 
+class SmartHQRawTempSensor(SmartHQServiceSensor):
+    """Temperature sensor that reads a named key (raw °F or °C) and converts dynamically.
+
+    Unlike SmartHQTempSensor (which always reads the 'fahrenheit' key),
+    this class accepts any state_key and a raw_unit to handle services
+    that expose temperature under arbitrary key names (e.g. domeFrontTemperature,
+    targetTemperatureFahrenheit, brewTemperature).
+
+    Conversion follows the device's own temperatureunits setting via
+    _device_temp_is_f(), which checks the cache, WS snapshot, coordinator data,
+    and HA system unit in that priority order.
+    """
+
+    def __init__(
+        self,
+        hass, entry, device_id, service_id, dev_name,
+        label: str, state_key: str, raw_unit: str, unique_id: str,
+    ) -> None:
+        # Pass unit=None so _attr_ does not fix the unit — our property overrides it.
+        super().__init__(
+            hass, entry, device_id, service_id, dev_name,
+            label, state_key,
+            None, None,
+            unique_id,
+        )
+        self._raw_unit = raw_unit  # UnitOfTemperature.FAHRENHEIT or CELSIUS
+
+    @property
+    def device_class(self) -> SensorDeviceClass:
+        return SensorDeviceClass.TEMPERATURE
+
+    @property
+    def native_unit_of_measurement(self) -> str:
+        return (
+            UnitOfTemperature.FAHRENHEIT
+            if _device_temp_is_f(self.hass, self._entry, self._device_id)
+            else UnitOfTemperature.CELSIUS
+        )
+
+    @property
+    def native_value(self):
+        st = self._get_state()
+        raw = st.get(self._state_key)
+        if raw is None:
+            return None
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            return raw
+        is_f = _device_temp_is_f(self.hass, self._entry, self._device_id)
+        if self._raw_unit == UnitOfTemperature.FAHRENHEIT:
+            return round(val, 1) if is_f else round((val - 32) * 5 / 9, 1)
+        else:  # raw is °C
+            return round(val * 9 / 5 + 32, 1) if is_f else round(val, 1)
+
+    @property
+    def available(self) -> bool:
+        st = self._get_state()
+        return bool(st) and not st.get("disabled") and self._state_key in st
+
+
 class SmartHQMeterSensor(SmartHQServiceSensor):
     """Sensor for meter services (cumulative energy, water, etc.)."""
 
@@ -1324,11 +1385,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
-                            entities.append(SmartHQServiceSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _label_for_key(state_key, stype, dom), state_key,
-                                dev_cls, unit, uid,
-                            ))
+                            if dev_cls == SensorDeviceClass.TEMPERATURE:
+                                entities.append(SmartHQRawTempSensor(
+                                    hass, entry, device_id, service_id, dev_name,
+                                    _label_for_key(state_key, stype, dom), state_key,
+                                    unit, uid,
+                                ))
+                            else:
+                                entities.append(SmartHQServiceSensor(
+                                    hass, entry, device_id, service_id, dev_name,
+                                    _label_for_key(state_key, stype, dom), state_key,
+                                    dev_cls, unit, uid,
+                                ))
                             existing_uids.add(uid)
 
                 # ── dishwasher.state.v1 sensors ─────────────────────────────
@@ -1477,10 +1545,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
-                            entities.append(SmartHQServiceSensor(
+                            entities.append(SmartHQRawTempSensor(
                                 hass, entry, device_id, service_id, dev_name,
                                 _camel_to_words(state_key), state_key,
-                                SensorDeviceClass.TEMPERATURE, UnitOfTemperature.FAHRENHEIT, uid,
+                                UnitOfTemperature.FAHRENHEIT, uid,
                             ))
                             existing_uids.add(uid)
 
@@ -1508,13 +1576,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
-                            entities.append(SmartHQLaundryStateSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, uid,
-                            ) if dev_cls is None else SmartHQServiceSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, dev_cls, unit, uid,
-                            ))
+                            if dev_cls == SensorDeviceClass.TEMPERATURE:
+                                entities.append(SmartHQRawTempSensor(
+                                    hass, entry, device_id, service_id, dev_name,
+                                    _camel_to_words(state_key), state_key,
+                                    unit, uid,
+                                ))
+                            elif dev_cls is None:
+                                entities.append(SmartHQLaundryStateSensor(
+                                    hass, entry, device_id, service_id, dev_name,
+                                    _camel_to_words(state_key), state_key, uid,
+                                ))
+                            else:
+                                entities.append(SmartHQServiceSensor(
+                                    hass, entry, device_id, service_id, dev_name,
+                                    _camel_to_words(state_key), state_key, dev_cls, unit, uid,
+                                ))
                             existing_uids.add(uid)
 
                 # ── espressomaker.v1 sensors ──────────────────────────────────
@@ -1529,13 +1606,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
-                            entities.append(SmartHQLaundryStateSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, uid,
-                            ) if dev_cls is None else SmartHQServiceSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, dev_cls, unit, uid,
-                            ))
+                            if dev_cls == SensorDeviceClass.TEMPERATURE:
+                                entities.append(SmartHQRawTempSensor(
+                                    hass, entry, device_id, service_id, dev_name,
+                                    _camel_to_words(state_key), state_key,
+                                    unit, uid,
+                                ))
+                            elif dev_cls is None:
+                                entities.append(SmartHQLaundryStateSensor(
+                                    hass, entry, device_id, service_id, dev_name,
+                                    _camel_to_words(state_key), state_key, uid,
+                                ))
+                            else:
+                                entities.append(SmartHQServiceSensor(
+                                    hass, entry, device_id, service_id, dev_name,
+                                    _camel_to_words(state_key), state_key, dev_cls, unit, uid,
+                                ))
                             existing_uids.add(uid)
 
                 # ── mixer.v1 sensors ──────────────────────────────────────────
@@ -1567,13 +1653,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     ]:
                         uid = make_unique_id(device_id, service_id, uid_sfx)
                         if uid not in existing_uids:
-                            entities.append(SmartHQLaundryStateSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, uid,
-                            ) if dev_cls is None else SmartHQServiceSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, dev_cls, unit, uid,
-                            ))
+                            if dev_cls == SensorDeviceClass.TEMPERATURE:
+                                entities.append(SmartHQRawTempSensor(
+                                    hass, entry, device_id, service_id, dev_name,
+                                    _camel_to_words(state_key), state_key,
+                                    unit, uid,
+                                ))
+                            else:
+                                entities.append(SmartHQLaundryStateSensor(
+                                    hass, entry, device_id, service_id, dev_name,
+                                    _camel_to_words(state_key), state_key, uid,
+                                ))
                             existing_uids.add(uid)
 
                 # ── sourdoughstarter.v1 sensors ───────────────────────────────
