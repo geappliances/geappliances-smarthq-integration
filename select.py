@@ -27,6 +27,8 @@ from .service_registry import (
     COFFEEBREWER_V1_SERVICE,
     COFFEEBREWER_V2_SERVICE,
     LAUNDRY_MODE_SERVICE,
+    TEMPERATURE_SERVICE,
+    CMD_TEMPERATURE_SET,
     DISHWASHER_MODE_V1_SERVICE,
     FLEXDISPENSE_SERVICE,
     STAINREMOVAL_SERVICE,
@@ -131,8 +133,29 @@ async def async_setup_entry(hass, entry, async_add_entities):
             cmds = svc.get("supportedCommands") or []
             cfg = svc.get("config") or {}
 
+            # ── temperature setpoint select (small integer range) ─────────────
+            # When fahrenheitMaximum - fahrenheitMinimum <= 30, expose as a
+            # stepped select instead of a free-form number input.
+            # (Fresh Food: 34-42°F, Freezer: -6-5°F  →  select)
+            # (Hot Water: 90-185°F, Oven: 150-500°F  →  number in number.py)
+            if stype == TEMPERATURE_SERVICE and CMD_TEMPERATURE_SET in cmds:
+                min_f = cfg.get("fahrenheitMinimum") or cfg.get("fahrenheitMin")
+                max_f = cfg.get("fahrenheitMaximum") or cfg.get("fahrenheitMax")
+                if min_f is not None and max_f is not None and (float(max_f) - float(min_f)) <= 30:
+                    _sdev = svc.get("serviceDeviceType") or ""
+                    _base = cfg.get("label") or dom.split(".")[-1].replace("_", " ").title()
+                    _prefix = sdev_prefix(_sdev)
+                    label = f"{_prefix} {_base}".strip() if _prefix else _base
+                    entities.append(SmartHQTemperatureSetpointSelect(
+                        hass=hass, entry=entry, client=client,
+                        device_id=device_id, service_id=service_id,
+                        dev_name=dev_name, label=label,
+                        min_f=float(min_f), max_f=float(max_f),
+                        unique_id=make_unique_id(device_id, service_id, "temp_setpoint_select"),
+                    ))
+
             # ── standard mode select ────────────────────────────────────────
-            if stype == MODE_SERVICE and CMD_MODE_SET in cmds:
+            elif stype == MODE_SERVICE and CMD_MODE_SET in cmds:
                 if dom in SWITCH_MODE_DOMAINS:
                     continue  # handled by switch.py
                 if dom in READONLY_MODE_DOMAINS:
@@ -969,14 +992,20 @@ class SmartHQCookNumericOptionSelect(_SmartHQCookParamSelectBase):
 
 
 class SmartHQCoffeeBrewerSelect(SelectEntity):
-    """Coffee Brewer parameter select (strength / size / temperature)."""
+    """Coffee Brewer parameter select (strength / size / temperature).
+
+    Temperature options and display values are dynamic: they follow the
+    device's own temperatureunits setting (same as other temperature entities).
+    Temperature is always stored internally in °C to match the API's
+    temperatureCelsius parameter in the start command.
+    """
 
     _attr_should_poll = False
     _attr_has_entity_name = True
 
     _STRENGTH_OPTIONS = ["Light", "Medium", "Bold"]
     _SIZE_OPTIONS = ["10 Oz", "12 Oz", "14 Oz", "Carafe"]
-    _TEMP_OPTIONS = [f"{t}°C" for t in range(85, 96)]
+    _TEMP_C_RANGE = list(range(85, 96))  # 85–95°C
 
     def __init__(self, hass, entry, device_id, service_id,
                  dev_name, select_type, unique_id):
@@ -999,9 +1028,12 @@ class SmartHQCoffeeBrewerSelect(SelectEntity):
             self._default = "12 Oz"
         else:  # temperature
             self._attr_name = f"{dev_name} Brew Temperature"
-            self._attr_options = self._TEMP_OPTIONS
             self._attr_icon = "mdi:thermometer"
-            self._default = "90°C"
+            self._default = "90°C"  # internal storage always °C
+
+    def _is_f(self) -> bool:
+        from .sensor import _device_temp_is_f
+        return _device_temp_is_f(self.hass, self._entry, self._device_id)
 
     def _settings(self) -> dict:
         bucket = _bucket(self.hass, self._entry)
@@ -1011,16 +1043,182 @@ class SmartHQCoffeeBrewerSelect(SelectEntity):
         })
 
     @property
+    def options(self) -> list[str]:
+        """Return temperature options in the device's current unit."""
+        if self._select_type != "temperature":
+            return self._attr_options
+        if self._is_f():
+            return [f"{round(t * 9 / 5 + 32)}°F" for t in self._TEMP_C_RANGE]
+        return [f"{t}°C" for t in self._TEMP_C_RANGE]
+
+    @property
     def current_option(self) -> str:
-        return self._settings().get(self._select_type, self._default)
+        if self._select_type != "temperature":
+            return self._settings().get(self._select_type, self._default)
+        # Stored value is always "°C" format; convert for display
+        stored = self._settings().get("temperature", "90°C")
+        try:
+            c = float(stored.replace("°C", ""))
+        except ValueError:
+            c = 90.0
+        if self._is_f():
+            return f"{round(c * 9 / 5 + 32)}°F"
+        return f"{round(c)}°C"
 
     @property
     def device_info(self):
         return _device_info_for(self.hass, self._entry, self._device_id)
 
     async def async_select_option(self, option: str) -> None:
-        self._settings()[self._select_type] = option
+        if self._select_type == "temperature":
+            # Always store in °C regardless of display unit
+            if "°F" in option:
+                try:
+                    f_val = float(option.replace("°F", ""))
+                    c_val = round((f_val - 32) * 5 / 9)
+                    self._settings()["temperature"] = f"{c_val}°C"
+                except ValueError:
+                    self._settings()["temperature"] = "90°C"
+            else:
+                self._settings()["temperature"] = option
+        else:
+            self._settings()[self._select_type] = option
         _LOGGER.info("[COFFEE] Set %s → %s", self._select_type, option)
+        self.schedule_update_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_DEVICE_UPDATED.format(device_id=self._device_id),
+                self._signal_update,
+            )
+        )
+        self._signal_update()
+
+    @callback
+    def _signal_update(self) -> None:
+        self.async_write_ha_state()
+
+
+# ---------------------------------------------------------------------------
+# Temperature Setpoint Select  (small integer range, e.g. Refrigerator)
+# ---------------------------------------------------------------------------
+
+class SmartHQTemperatureSetpointSelect(SelectEntity):
+    """Select entity for writable temperature services with a small integer range.
+
+    Instead of a free-form number input, this entity exposes every integer
+    degree (°F or °C depending on the device's temperatureunits setting) as a
+    selectable option.  The API always receives/stores Fahrenheit.
+
+    Reads state from WS snapshot first, then coordinator.data (for devices
+    with no real-time WS updates such as Refrigerators).
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:thermometer"
+
+    def __init__(self, hass, entry, client, device_id, service_id,
+                 dev_name, label, min_f: float, max_f: float, unique_id):
+        self.hass = hass
+        self._entry = entry
+        self._client = client
+        self._device_id = device_id
+        self._service_id = service_id
+        self._min_f = min_f
+        self._max_f = max_f
+        self._attr_unique_id = unique_id
+        self._attr_name = f"{dev_name} {label}"
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    def _is_f(self) -> bool:
+        from .sensor import _device_temp_is_f
+        return _device_temp_is_f(self.hass, self._entry, self._device_id)
+
+    def _f_to_display(self, f: float) -> int:
+        if self._is_f():
+            return round(f)
+        return round((f - 32) * 5 / 9)
+
+    def _display_to_f(self, v: int) -> float:
+        if self._is_f():
+            return float(v)
+        return round(v * 9 / 5 + 32, 1)
+
+    def _display_min(self) -> int:
+        return self._f_to_display(self._min_f)
+
+    def _display_max(self) -> int:
+        return self._f_to_display(self._max_f)
+
+    def _get_state(self) -> dict:
+        """WS snapshot first, then coordinator.data fallback."""
+        snap = _snapshot_for(self.hass, self._entry, self._device_id)
+        ws_st = (snap.get("services") or {}).get(self._service_id) or {}
+        if ws_st and "fahrenheit" in ws_st:
+            return ws_st
+        # coordinator.data fallback (e.g. Refrigerator has no WS updates)
+        bucket = _bucket(self.hass, self._entry)
+        coordinator = bucket.get("coordinator")
+        if coordinator and coordinator.data:
+            dev_data = coordinator.data.get(self._device_id) or {}
+            for svc in (dev_data.get("item") or {}).get("services") or []:
+                if isinstance(svc, dict):
+                    sid = svc.get("id") or svc.get("serviceId") or ""
+                    if sid == self._service_id:
+                        return svc.get("state") or {}
+        return ws_st
+
+    # ------------------------------------------------------------------
+    # SelectEntity properties
+    # ------------------------------------------------------------------
+    @property
+    def options(self) -> list[str]:
+        lo, hi = self._display_min(), self._display_max()
+        unit = "°F" if self._is_f() else "°C"
+        step = 1 if lo <= hi else -1
+        return [f"{v}{unit}" for v in range(lo, hi + step, step)]
+
+    @property
+    def current_option(self) -> Optional[str]:
+        st = self._get_state()
+        raw = st.get("fahrenheit")
+        if raw is None:
+            return None
+        display = self._f_to_display(float(raw))
+        unit = "°F" if self._is_f() else "°C"
+        opt = f"{display}{unit}"
+        return opt if opt in self.options else None
+
+    @property
+    def available(self) -> bool:
+        st = self._get_state()
+        return "fahrenheit" in st
+
+    @property
+    def device_info(self):
+        return _device_info_for(self.hass, self._entry, self._device_id)
+
+    async def async_select_option(self, option: str) -> None:
+        unit = "°F" if self._is_f() else "°C"
+        try:
+            v = int(option.replace(unit, "").strip())
+        except ValueError:
+            return
+        f_val = self._display_to_f(v)
+        if self._client:
+            snap = _snapshot_for(self.hass, self._entry, self._device_id)
+            svc_dict = (snap.get("services") or {}).get(self._service_id) or {}
+            await self._client.async_send_service_command(
+                device_id=self._device_id,
+                service=svc_dict,
+                command_type=CMD_TEMPERATURE_SET,
+                command_params={"fahrenheit": f_val},
+            )
         self.schedule_update_ha_state()
 
     async def async_added_to_hass(self) -> None:

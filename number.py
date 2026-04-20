@@ -99,6 +99,10 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     continue
                 min_f = float(cfg.get("fahrenheitMinimum") or cfg.get("fahrenheitMin") or 32)
                 max_f = float(cfg.get("fahrenheitMaximum") or cfg.get("fahrenheitMax") or 500)
+                # Small integer range (≤30°F span) → handled by SmartHQTemperatureSetpointSelect
+                # in select.py. Skip here to avoid duplicate entities.
+                if (max_f - min_f) <= 30:
+                    continue
                 _sdev = svc.get("serviceDeviceType") or ""
                 _base = cfg.get("label") or dom.split(".")[-1].replace("_", " ").title()
                 _prefix = sdev_prefix(_sdev)
@@ -199,6 +203,8 @@ class SmartHQTemperatureNumber(_SmartHQNumberBase):
 
     Unit follows the device's temperatureunits setting dynamically.
     Internal storage is always °F; values are converted on the fly.
+    For devices with no WS updates (e.g. Refrigerator), falls back to
+    coordinator.data for the initial state.
     """
 
     _attr_mode = NumberMode.BOX
@@ -210,6 +216,25 @@ class SmartHQTemperatureNumber(_SmartHQNumberBase):
         super().__init__(hass, entry, device_id, service_id, dev_name, label, unique_id)
         self._min_f = min_f
         self._max_f = max_f
+
+    def _get_state(self) -> dict:
+        """Return service state: WS snapshot first, then coordinator.data fallback."""
+        snap = _snapshot_for(self.hass, self._entry, self._device_id)
+        ws_st = (snap.get("services") or {}).get(self._service_id) or {}
+        if ws_st and "fahrenheit" in ws_st:
+            return ws_st
+        # Fallback: coordinator.data initial state (for devices with no WS updates)
+        bucket = _bucket(self.hass, self._entry)
+        coordinator = bucket.get("coordinator")
+        if coordinator and coordinator.data:
+            dev_data = coordinator.data.get(self._device_id) or {}
+            services_list = (dev_data.get("item") or {}).get("services") or []
+            for svc in services_list:
+                if isinstance(svc, dict):
+                    sid = svc.get("id") or svc.get("serviceId") or ""
+                    if sid == self._service_id:
+                        return svc.get("state") or {}
+        return ws_st
 
     # ------------------------------------------------------------------
     # Unit helpers
