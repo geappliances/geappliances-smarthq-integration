@@ -146,12 +146,17 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     _base = cfg.get("label") or dom.split(".")[-1].replace("_", " ").title()
                     _prefix = sdev_prefix(_sdev)
                     label = f"{_prefix} {_base}".strip() if _prefix else _base
+                    # warm.auto temperature → 라벨 고정 + Warm 모드일 때만 활성화
+                    warm_mode_only = "warm.auto" in dom
+                    if warm_mode_only:
+                        label = "Auto Warm Temperature"
                     entities.append(SmartHQTemperatureSetpointSelect(
                         hass=hass, entry=entry, client=client,
                         device_id=device_id, service_id=service_id,
                         dev_name=dev_name, label=label,
                         min_f=float(min_f), max_f=float(max_f),
                         unique_id=make_unique_id(device_id, service_id, "temp_setpoint_select"),
+                        warm_mode_only=warm_mode_only,
                     ))
 
             # ── standard mode select ────────────────────────────────────────
@@ -1121,7 +1126,8 @@ class SmartHQTemperatureSetpointSelect(SelectEntity):
     _attr_icon = "mdi:thermometer"
 
     def __init__(self, hass, entry, client, device_id, service_id,
-                 dev_name, label, min_f: float, max_f: float, unique_id):
+                 dev_name, label, min_f: float, max_f: float, unique_id,
+                 warm_mode_only: bool = False):
         self.hass = hass
         self._entry = entry
         self._client = client
@@ -1129,6 +1135,7 @@ class SmartHQTemperatureSetpointSelect(SelectEntity):
         self._service_id = service_id
         self._min_f = min_f
         self._max_f = max_f
+        self._warm_mode_only = warm_mode_only
         self._attr_unique_id = unique_id
         self._attr_name = f"{dev_name} {label}"
 
@@ -1194,10 +1201,29 @@ class SmartHQTemperatureSetpointSelect(SelectEntity):
         opt = f"{display}{unit}"
         return opt if opt in self.options else None
 
+    def _is_warm_cook_mode(self) -> bool:
+        """Return True when Cook Mode is set to Warm (cooking.warm).
+
+        Reads the cooking.state.v1 service snapshot for this device.
+        Falls back to True (available) when state cannot be determined.
+        """
+        snap = _snapshot_for(self.hass, self._entry, self._device_id)
+        for svc_state in (snap.get("services") or {}).values():
+            if not isinstance(svc_state, dict):
+                continue
+            mode = svc_state.get("mode") or ""
+            if mode:  # cooking.state.v1 carries 'mode' key
+                return "cooking.warm" in mode
+        return True  # unknown state → don't lock out the user
+
     @property
     def available(self) -> bool:
         st = self._get_state()
-        return "fahrenheit" in st
+        if not ("fahrenheit" in st):
+            return False
+        if self._warm_mode_only and not self._is_warm_cook_mode():
+            return False
+        return True
 
     @property
     def device_info(self):

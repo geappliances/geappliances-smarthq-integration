@@ -168,6 +168,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     min_val=min_val, max_val=max_val, unit=ha_unit,
                     unique_id=make_unique_id(device_id, service_id, "int_number"),
                     enabled_default=enabled_default,
+                    warm_mode_only=("warm.auto" in dom and "device.smoker" in _sdev),
                 ))
 
     _LOGGER.info("[NUMBER] Registering %d number entities", len(entities))
@@ -321,12 +322,33 @@ class SmartHQIntegerNumber(_SmartHQNumberBase):
 
     def __init__(self, hass, entry, device_id, service_id,
                  dev_name, label, min_val, max_val, unit, unique_id,
-                 enabled_default: bool = True):
+                 enabled_default: bool = True, warm_mode_only: bool = False):
         super().__init__(hass, entry, device_id, service_id, dev_name, label, unique_id)
         self._attr_native_min_value = min_val
         self._attr_native_max_value = max_val
         self._attr_native_unit_of_measurement = unit
         self._attr_entity_registry_enabled_default = enabled_default
+        self._warm_mode_only = warm_mode_only
+
+    def _is_warm_cook_mode(self) -> bool:
+        """Return True when Cook Mode is Warm. Falls back to True if unknown."""
+        snap = _snapshot_for(self.hass, self._entry, self._device_id)
+        for svc_state in (snap.get("services") or {}).values():
+            if not isinstance(svc_state, dict):
+                continue
+            mode = svc_state.get("mode") or ""
+            if mode:
+                return "cooking.warm" in mode
+        return True
+
+    @property
+    def available(self) -> bool:
+        st = self._get_state()
+        if not st or st.get("disabled", False):
+            return False
+        if self._warm_mode_only and not self._is_warm_cook_mode():
+            return False
+        return True
 
     @property
     def native_value(self) -> float | None:
