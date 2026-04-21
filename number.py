@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfTemperature
+from homeassistant.const import UnitOfTemperature, UnitOfTime
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -143,12 +143,31 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 _prefix = sdev_prefix(_sdev)
                 label = f"{_prefix} {_base}".strip() if _prefix else _base
                 ha_unit, _ = _integer_units_to_ha(int_units)
+
+                # ── cooking.warm.auto integer: special handling ─────────────
+                # Two integer services share this domain:
+                #   • device.smoker  (value=1440) → Auto Warm hold duration (minutes)
+                #   • device.notice  (value=0)    → notification timer, always 0,
+                #                                   no meaningful config → disable by default
+                enabled_default = True
+                if "warm.auto" in dom:
+                    if "device.notice" in _sdev:
+                        # Notification timer — no useful config, disable by default
+                        enabled_default = False
+                    elif "device.smoker" in _sdev:
+                        # Hold duration in minutes (0 – 1440 = 24 h)
+                        label = "Auto Warm Duration"
+                        ha_unit = UnitOfTime.MINUTES
+                        min_val = 0.0
+                        max_val = 1440.0
+
                 entities.append(SmartHQIntegerNumber(
                     hass=hass, entry=entry,
                     device_id=device_id, service_id=service_id,
                     dev_name=dev_name, label=label,
                     min_val=min_val, max_val=max_val, unit=ha_unit,
                     unique_id=make_unique_id(device_id, service_id, "int_number"),
+                    enabled_default=enabled_default,
                 ))
 
     _LOGGER.info("[NUMBER] Registering %d number entities", len(entities))
@@ -301,11 +320,13 @@ class SmartHQIntegerNumber(_SmartHQNumberBase):
     _attr_native_step = 1.0
 
     def __init__(self, hass, entry, device_id, service_id,
-                 dev_name, label, min_val, max_val, unit, unique_id):
+                 dev_name, label, min_val, max_val, unit, unique_id,
+                 enabled_default: bool = True):
         super().__init__(hass, entry, device_id, service_id, dev_name, label, unique_id)
         self._attr_native_min_value = min_val
         self._attr_native_max_value = max_val
         self._attr_native_unit_of_measurement = unit
+        self._attr_entity_registry_enabled_default = enabled_default
 
     @property
     def native_value(self) -> float | None:
