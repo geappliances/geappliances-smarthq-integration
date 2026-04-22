@@ -337,7 +337,8 @@ class SmartHQIntegerNumber(_SmartHQNumberBase):
             if not isinstance(svc_state, dict):
                 continue
             mode = svc_state.get("mode") or ""
-            if mode:
+            # Only cooking.state.v1 has mode starting with cooking domain prefix
+            if mode.startswith("cloud.smarthq.domain.cooking."):
                 return "cooking.warm" in mode
         return True
 
