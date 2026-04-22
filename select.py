@@ -1202,29 +1202,49 @@ class SmartHQTemperatureSetpointSelect(SelectEntity):
         return opt if opt in self.options else None
 
     def _is_warm_cook_mode(self) -> bool:
-        """Return True when Cook Mode is set to Warm (cooking.warm).
+        """Return True when Cook Mode is set to Warm.
 
-        Reads the cooking.state.v1 service snapshot for this device.
-        Falls back to True (available) when state cannot be determined.
+        Priority:
+        1. pending_cook_modes (set by SmartHQCookModeSelect on HA selection)
+        2. WS snapshot real-time state (cooking.state.v1 serviceId lookup)
+        3. coordinator.data initial state fallback
         """
-        snap = _snapshot_for(self.hass, self._entry, self._device_id)
-        for svc_state in (snap.get("services") or {}).values():
-            if not isinstance(svc_state, dict):
-                continue
-            mode = svc_state.get("mode") or ""
-            # Only cooking.state.v1 has mode starting with cooking domain prefix
-            if mode.startswith("cloud.smarthq.domain.cooking."):
-                return "cooking.warm" in mode
-        return True  # unknown state → don't lock out the user
+        bucket = _bucket(self.hass, self._entry)
+        # 1. Pending selection
+        pending = (bucket.get("pending_cook_modes") or {}).get(self._device_id) or {}
+        token = pending.get("mode_token") or ""
+        if token:
+            return "cooking.warm" in token
+        # 2 & 3. Find cooking.state.v1 serviceId from coordinator, then check snapshot
+        coordinator = bucket.get("coordinator")
+        if coordinator and coordinator.data:
+            dev_data = coordinator.data.get(self._device_id) or {}
+            for svc in (dev_data.get("item") or {}).get("services") or []:
+                if not isinstance(svc, dict):
+                    continue
+                if svc.get("serviceType") != "cloud.smarthq.service.cooking.state.v1":
+                    continue
+                sid = svc.get("serviceId") or svc.get("id") or ""
+                # 2. WS snapshot (real-time)
+                snap = _snapshot_for(self.hass, self._entry, self._device_id)
+                ws_mode = (snap.get("services") or {}).get(sid, {}).get("mode") or ""
+                if ws_mode:
+                    return "cooking.warm" in ws_mode
+                # 3. Coordinator initial state
+                mode = (svc.get("state") or {}).get("mode") or ""
+                if mode:
+                    return "cooking.warm" in mode
+        return False
 
     @property
     def available(self) -> bool:
         st = self._get_state()
-        if not ("fahrenheit" in st):
+        if st.get("disabled", False):
             return False
-        if self._warm_mode_only and not self._is_warm_cook_mode():
-            return False
-        return True
+        if self._warm_mode_only:
+            # Availability is determined purely by Cook Mode, not by state presence
+            return self._is_warm_cook_mode()
+        return "fahrenheit" in st
 
     @property
     def device_info(self):
@@ -1253,6 +1273,13 @@ class SmartHQTemperatureSetpointSelect(SelectEntity):
             async_dispatcher_connect(
                 self.hass,
                 SIGNAL_DEVICE_UPDATED.format(device_id=self._device_id),
+                self._signal_update,
+            )
+        )
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_COOK_MODE_CHANGED.format(device_id=self._device_id),
                 self._signal_update,
             )
         )

@@ -466,6 +466,10 @@ class SmartHQStartCookingButton(_SmartHQButtonBase):
             )
             _LOGGER.info("[START_COOKING] ✓ Settings sent to device %s", self._device_id[:8])
 
+            # ── Warm mode: also send warm.auto temperature & duration ────────
+            if "cooking.warm" in mode_token:
+                await self._send_auto_warm_params(client)
+
             # Persist last sent mode; clear one-shot pending params
             if mode_token:
                 bucket.setdefault("pending_cook_modes", {}).setdefault(
@@ -477,6 +481,69 @@ class SmartHQStartCookingButton(_SmartHQButtonBase):
 
         except Exception as exc:
             _LOGGER.error("[START_COOKING] Failed: %s", exc, exc_info=True)
+
+    async def _send_auto_warm_params(self, client) -> None:
+        """Send warm.auto temperature and duration via their own service commands."""
+        from .service_registry import TEMPERATURE_SERVICE, INTEGER_SERVICE
+        CMD_TEMP_SET   = "cloud.smarthq.command.temperature.set"
+        CMD_INT_SET    = "cloud.smarthq.command.integer.set"
+        WARM_AUTO_DOM  = "cloud.smarthq.domain.cooking.warm.auto"
+
+        bucket = _bucket(self.hass, self._entry)
+        coordinator = bucket.get("coordinator")
+        if not coordinator or not coordinator.data:
+            _LOGGER.debug("[AUTO_WARM] No coordinator data available")
+            return
+        dev_data = coordinator.data.get(self._device_id) or {}
+        services = (dev_data.get("item") or {}).get("services") or []
+        snap = _snapshot_for(self.hass, self._entry, self._device_id)
+
+        _LOGGER.debug("[AUTO_WARM] Scanning %d services for warm.auto", len(services))
+
+        for svc in services:
+            if not isinstance(svc, dict):
+                continue
+            if svc.get("domainType") != WARM_AUTO_DOM:
+                continue
+            stype = svc.get("serviceType") or ""
+            sdev  = svc.get("serviceDeviceType") or ""
+            sid   = svc.get("serviceId") or svc.get("id") or ""
+            svc_snap = (snap.get("services") or {}).get(sid) or {}
+
+            _LOGGER.debug("[AUTO_WARM] Found: stype=%s sdev=%s",
+                stype.split(".")[-1], sdev.split(".")[-1])
+
+            # ── warm.auto temperature (device.smoker) ────────────────────────
+            if stype == TEMPERATURE_SERVICE and "device.smoker" in sdev:
+                f_val = svc_snap.get("fahrenheit") or (svc.get("state") or {}).get("fahrenheit")
+                _LOGGER.debug("[AUTO_WARM] temp f_val=%s", f_val)
+                if f_val is not None:
+                    try:
+                        await client.async_send_service_command(
+                            device_id=self._device_id,
+                            service=svc,
+                            command_type=CMD_TEMP_SET,
+                            command_params={"fahrenheit": float(f_val)},
+                        )
+                        _LOGGER.info("[START_COOKING] ✓ warm.auto temp sent: %s°F", f_val)
+                    except Exception as exc:
+                        _LOGGER.error("[START_COOKING] warm.auto temp failed: %s", exc)
+
+            # ── warm.auto integer duration (device.smoker) ───────────────────
+            elif stype == INTEGER_SERVICE and "device.smoker" in sdev:
+                val = svc_snap.get("value") or (svc.get("state") or {}).get("value")
+                _LOGGER.debug("[AUTO_WARM] duration val=%s", val)
+                if val is not None:
+                    try:
+                        await client.async_send_service_command(
+                            device_id=self._device_id,
+                            service=svc,
+                            command_type=CMD_INT_SET,
+                            command_params={"value": int(val)},
+                        )
+                        _LOGGER.info("[START_COOKING] ✓ warm.auto duration sent: %s min", val)
+                    except Exception as exc:
+                        _LOGGER.error("[START_COOKING] warm.auto duration failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------

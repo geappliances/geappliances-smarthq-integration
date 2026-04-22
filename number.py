@@ -145,21 +145,36 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 ha_unit, _ = _integer_units_to_ha(int_units)
 
                 # ── cooking.warm.auto integer: special handling ─────────────
-                # Two integer services share this domain:
-                #   • device.smoker  (value=1440) → Auto Warm hold duration (minutes)
-                #   • device.notice  (value=0)    → notification timer, always 0,
-                #                                   no meaningful config → disable by default
                 enabled_default = True
+                # Two integer services share this domain:
+                #   • device.smoker  (value=1440) → Auto Warm hold duration
+                #     Split into Hours (1-24) + Minutes (0-60) entities
+                #   • device.notice  (value=0)    → notification timer, always 0
+                #                                   → disable by default
                 if "warm.auto" in dom:
                     if "device.notice" in _sdev:
-                        # Notification timer — no useful config, disable by default
-                        enabled_default = False
+                        entities.append(SmartHQIntegerNumber(
+                            hass=hass, entry=entry,
+                            device_id=device_id, service_id=service_id,
+                            dev_name=dev_name, label=label,
+                            min_val=0.0, max_val=1440.0, unit=ha_unit,
+                            unique_id=make_unique_id(device_id, service_id, "int_number"),
+                            enabled_default=False,
+                        ))
                     elif "device.smoker" in _sdev:
-                        # Hold duration in minutes (0 – 1440 = 24 h)
-                        label = "Auto Warm Duration"
-                        ha_unit = UnitOfTime.MINUTES
-                        min_val = 0.0
-                        max_val = 1440.0
+                        entities.append(SmartHQAutoWarmHoursNumber(
+                            hass=hass, entry=entry,
+                            device_id=device_id, service_id=service_id,
+                            dev_name=dev_name,
+                            unique_id=make_unique_id(device_id, service_id, "auto_warm_hours"),
+                        ))
+                        entities.append(SmartHQAutoWarmMinutesNumber(
+                            hass=hass, entry=entry,
+                            device_id=device_id, service_id=service_id,
+                            dev_name=dev_name,
+                            unique_id=make_unique_id(device_id, service_id, "auto_warm_minutes"),
+                        ))
+                    continue  # skip the generic append below
 
                 entities.append(SmartHQIntegerNumber(
                     hass=hass, entry=entry,
@@ -168,7 +183,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     min_val=min_val, max_val=max_val, unit=ha_unit,
                     unique_id=make_unique_id(device_id, service_id, "int_number"),
                     enabled_default=enabled_default,
-                    warm_mode_only=("warm.auto" in dom and "device.smoker" in _sdev),
+                    warm_mode_only=False,
                 ))
 
     _LOGGER.info("[NUMBER] Registering %d number entities", len(entities))
@@ -330,26 +345,60 @@ class SmartHQIntegerNumber(_SmartHQNumberBase):
         self._attr_entity_registry_enabled_default = enabled_default
         self._warm_mode_only = warm_mode_only
 
-    def _is_warm_cook_mode(self) -> bool:
-        """Return True when Cook Mode is Warm. Falls back to True if unknown."""
+    def _get_state(self) -> dict:
+        """WS snapshot first, then coordinator.data fallback."""
         snap = _snapshot_for(self.hass, self._entry, self._device_id)
-        for svc_state in (snap.get("services") or {}).values():
-            if not isinstance(svc_state, dict):
-                continue
-            mode = svc_state.get("mode") or ""
-            # Only cooking.state.v1 has mode starting with cooking domain prefix
-            if mode.startswith("cloud.smarthq.domain.cooking."):
-                return "cooking.warm" in mode
-        return True
+        ws_st = (snap.get("services") or {}).get(self._service_id) or {}
+        if ws_st:
+            return ws_st
+        bucket = _bucket(self.hass, self._entry)
+        coordinator = bucket.get("coordinator")
+        if coordinator and coordinator.data:
+            dev_data = coordinator.data.get(self._device_id) or {}
+            for svc in (dev_data.get("item") or {}).get("services") or []:
+                if isinstance(svc, dict):
+                    sid = svc.get("id") or svc.get("serviceId") or ""
+                    if sid == self._service_id:
+                        return svc.get("state") or {}
+        return ws_st
+
+    def _is_warm_cook_mode(self) -> bool:
+        """Return True when Cook Mode is set to Warm.
+
+        Priority: pending_cook_modes → WS snapshot → coordinator.data
+        """
+        bucket = _bucket(self.hass, self._entry)
+        pending = (bucket.get("pending_cook_modes") or {}).get(self._device_id) or {}
+        token = pending.get("mode_token") or ""
+        if token:
+            return "cooking.warm" in token
+        coordinator = bucket.get("coordinator")
+        if coordinator and coordinator.data:
+            dev_data = coordinator.data.get(self._device_id) or {}
+            for svc in (dev_data.get("item") or {}).get("services") or []:
+                if not isinstance(svc, dict):
+                    continue
+                if svc.get("serviceType") != "cloud.smarthq.service.cooking.state.v1":
+                    continue
+                sid = svc.get("serviceId") or svc.get("id") or ""
+                snap = _snapshot_for(self.hass, self._entry, self._device_id)
+                ws_mode = (snap.get("services") or {}).get(sid, {}).get("mode") or ""
+                if ws_mode:
+                    return "cooking.warm" in ws_mode
+                mode = (svc.get("state") or {}).get("mode") or ""
+                if mode:
+                    return "cooking.warm" in mode
+        return False
 
     @property
     def available(self) -> bool:
         st = self._get_state()
-        if not st or st.get("disabled", False):
+        if st.get("disabled", False):
             return False
-        if self._warm_mode_only and not self._is_warm_cook_mode():
-            return False
-        return True
+        if self._warm_mode_only:
+            # Even if state is empty, check cook mode — don't block on missing state
+            return self._is_warm_cook_mode()
+        return bool(st)
 
     @property
     def native_value(self) -> float | None:
@@ -368,6 +417,205 @@ class SmartHQIntegerNumber(_SmartHQNumberBase):
                 command_params={"value": value},
             )
         self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_DEVICE_UPDATED.format(device_id=self._device_id),
+                self._signal_update,
+            )
+        )
+        if self._warm_mode_only:
+            self.async_on_remove(
+                async_dispatcher_connect(
+                    self.hass,
+                    SIGNAL_COOK_MODE_CHANGED.format(device_id=self._device_id),
+                    self._signal_update,
+                )
+            )
+
+    @callback
+    def _signal_update(self) -> None:
+        self.async_write_ha_state()
+
+
+# ---------------------------------------------------------------------------
+# Auto Warm Duration — Hours + Minutes pair
+# ---------------------------------------------------------------------------
+
+class _SmartHQAutoWarmDurationBase(_SmartHQNumberBase):
+    """Base for the Auto Warm Duration hour/minute pair.
+
+    The API stores total minutes in a single integer service (value key).
+    Hours and Minutes entities share the same service_id and read/write
+    cooperatively via bucket["auto_warm_pending"][device_id].
+    """
+
+    _attr_mode = NumberMode.BOX
+    _attr_native_step = 1.0
+
+    def __init__(self, hass, entry, device_id, service_id, dev_name, unique_id):
+        super().__init__(hass, entry, device_id, service_id, dev_name, "", unique_id)
+
+    def _get_total_minutes(self) -> int | None:
+        """Return current total minutes from WS snapshot or coordinator fallback."""
+        snap = _snapshot_for(self.hass, self._entry, self._device_id)
+        ws_st = (snap.get("services") or {}).get(self._service_id) or {}
+        val = ws_st.get("value")
+        if val is not None:
+            return int(val)
+        bucket = _bucket(self.hass, self._entry)
+        coordinator = bucket.get("coordinator")
+        if coordinator and coordinator.data:
+            dev_data = coordinator.data.get(self._device_id) or {}
+            for svc in (dev_data.get("item") or {}).get("services") or []:
+                if isinstance(svc, dict):
+                    sid = svc.get("serviceId") or svc.get("id") or ""
+                    if sid == self._service_id:
+                        v = (svc.get("state") or {}).get("value")
+                        return int(v) if v is not None else None
+        return None
+
+    def _pending_minutes(self) -> dict:
+        """Shared mutable dict for staging hour/minute edits before sending."""
+        bucket = _bucket(self.hass, self._entry)
+        return bucket.setdefault("auto_warm_pending", {}).setdefault(self._device_id, {})
+
+    async def _send_total(self, total_minutes: int) -> None:
+        client = _bucket(self.hass, self._entry).get("client")
+        if client:
+            snap = _snapshot_for(self.hass, self._entry, self._device_id)
+            svc_dict = (snap.get("services") or {}).get(self._service_id) or {}
+            await client.async_send_service_command(
+                device_id=self._device_id,
+                service=svc_dict,
+                command_type=CMD_INTEGER_SET,
+                command_params={"value": total_minutes},
+            )
+        self.async_write_ha_state()
+
+    def _is_warm_cook_mode(self) -> bool:
+        """Return True when Cook Mode is set to Warm.
+
+        Priority: pending_cook_modes → WS snapshot → coordinator.data
+        """
+        bucket = _bucket(self.hass, self._entry)
+        pending = (bucket.get("pending_cook_modes") or {}).get(self._device_id) or {}
+        token = pending.get("mode_token") or ""
+        if token:
+            return "cooking.warm" in token
+        coordinator = bucket.get("coordinator")
+        if coordinator and coordinator.data:
+            dev_data = coordinator.data.get(self._device_id) or {}
+            for svc in (dev_data.get("item") or {}).get("services") or []:
+                if not isinstance(svc, dict):
+                    continue
+                if svc.get("serviceType") != "cloud.smarthq.service.cooking.state.v1":
+                    continue
+                sid = svc.get("serviceId") or svc.get("id") or ""
+                snap = _snapshot_for(self.hass, self._entry, self._device_id)
+                ws_mode = (snap.get("services") or {}).get(sid, {}).get("mode") or ""
+                if ws_mode:
+                    return "cooking.warm" in ws_mode
+                mode = (svc.get("state") or {}).get("mode") or ""
+                if mode:
+                    return "cooking.warm" in mode
+        return False
+
+    @property
+    def available(self) -> bool:
+        return self._is_warm_cook_mode()
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_DEVICE_UPDATED.format(device_id=self._device_id),
+                self._signal_update,
+            )
+        )
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_COOK_MODE_CHANGED.format(device_id=self._device_id),
+                self._signal_update,
+            )
+        )
+
+    @callback
+    def _signal_update(self) -> None:
+        self.async_write_ha_state()
+
+
+class SmartHQAutoWarmHoursNumber(_SmartHQAutoWarmDurationBase):
+    """Auto Warm Duration — hours component (1–24)."""
+
+    _attr_native_min_value = 1.0
+    _attr_native_max_value = 24.0
+    _attr_native_unit_of_measurement = UnitOfTime.HOURS
+    _attr_icon = "mdi:timer-outline"
+
+    def __init__(self, hass, entry, device_id, service_id, dev_name, unique_id):
+        super().__init__(hass, entry, device_id, service_id, dev_name, unique_id)
+        self._attr_name = f"{dev_name} Auto Warm Duration Hours"
+
+    @property
+    def native_value(self) -> float | None:
+        # Pending staged value takes priority
+        p = self._pending_minutes()
+        if "hours" in p:
+            return float(p["hours"])
+        total = self._get_total_minutes()
+        if total is None:
+            return None
+        return float(max(1, total // 60))
+
+    async def async_set_native_value(self, value: float) -> None:
+        hours = int(value)
+        p = self._pending_minutes()
+        # Determine current minutes component
+        if "minutes" in p:
+            mins = p["minutes"]
+        else:
+            total = self._get_total_minutes() or 0
+            mins = total % 60
+        p["hours"] = hours
+        await self._send_total(hours * 60 + mins)
+
+
+class SmartHQAutoWarmMinutesNumber(_SmartHQAutoWarmDurationBase):
+    """Auto Warm Duration — minutes component (0–60)."""
+
+    _attr_native_min_value = 0.0
+    _attr_native_max_value = 60.0
+    _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+    _attr_icon = "mdi:timer-sand"
+
+    def __init__(self, hass, entry, device_id, service_id, dev_name, unique_id):
+        super().__init__(hass, entry, device_id, service_id, dev_name, unique_id)
+        self._attr_name = f"{dev_name} Auto Warm Duration Minutes"
+
+    @property
+    def native_value(self) -> float | None:
+        p = self._pending_minutes()
+        if "minutes" in p:
+            return float(p["minutes"])
+        total = self._get_total_minutes()
+        if total is None:
+            return None
+        return float(total % 60)
+
+    async def async_set_native_value(self, value: float) -> None:
+        mins = int(value)
+        p = self._pending_minutes()
+        if "hours" in p:
+            hours = p["hours"]
+        else:
+            total = self._get_total_minutes() or 60
+            hours = max(1, total // 60)
+        p["minutes"] = mins
+        await self._send_total(hours * 60 + mins)
 
 
 class SmartHQDishdrawerDelayStartNumber(_SmartHQNumberBase):
