@@ -442,6 +442,33 @@ class SmartHQStartCookingButton(_SmartHQButtonBase):
             _LOGGER.error("[START_COOKING] No cook mode selected or active")
             return
 
+        # ── Warm mode: read cavity temp & cook time from warm.auto snapshot ─
+        # For cooking.warm, the temperature/time come from warm.auto services,
+        # not from the main cook params (which default to probe-based).
+        if "cooking.warm" in mode_token and (temp_value is None or timer_value is None):
+            from .service_registry import TEMPERATURE_SERVICE, INTEGER_SERVICE
+            WARM_AUTO_DOM = "cloud.smarthq.domain.cooking.warm.auto"
+            snap = _snapshot_for(self.hass, self._entry, self._device_id)
+            for sid, svc_snap in (snap.get("services") or {}).items():
+                if not isinstance(svc_snap, dict):
+                    continue
+                if svc_snap.get("domainType") != WARM_AUTO_DOM:
+                    continue
+                stype = svc_snap.get("serviceType") or ""
+                sdev  = svc_snap.get("serviceDeviceType") or ""
+                if stype == TEMPERATURE_SERVICE and "device.smoker" in sdev:
+                    if temp_value is None:
+                        temp_value = svc_snap.get("fahrenheit")
+                elif stype == INTEGER_SERVICE and "device.smoker" in sdev:
+                    if timer_value is None:
+                        raw_min = svc_snap.get("value")
+                        if raw_min is not None:
+                            timer_value = int(raw_min)
+            _LOGGER.info(
+                "[START_COOKING] Warm mode params from warm.auto snapshot: temp=%s°F duration=%smin",
+                temp_value, timer_value,
+            )
+
         _LOGGER.info(
             "[START_COOKING] Device %s: mode=%s temp=%s timer=%s probe=%s smoke=%s "
             "probe_based=%s warm=%s doneness=%s option=%s numeric=%s",
@@ -465,10 +492,6 @@ class SmartHQStartCookingButton(_SmartHQButtonBase):
                 numeric_option=numeric_option,
             )
             _LOGGER.info("[START_COOKING] ✓ Settings sent to device %s", self._device_id[:8])
-
-            # ── Warm mode: also send warm.auto temperature & duration ────────
-            if "cooking.warm" in mode_token:
-                await self._send_auto_warm_params(client)
 
             # Persist last sent mode; clear one-shot pending params
             if mode_token:
