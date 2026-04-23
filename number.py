@@ -558,7 +558,7 @@ class SmartHQAutoWarmHoursNumber(_SmartHQAutoWarmDurationBase):
 
     def __init__(self, hass, entry, device_id, service_id, dev_name, unique_id):
         super().__init__(hass, entry, device_id, service_id, dev_name, unique_id)
-        self._attr_name = f"{dev_name} Auto Warm Duration Hours"
+        self._attr_name = f"{dev_name} Keep Warm Time Hours"
 
     @property
     def native_value(self) -> float | None:
@@ -594,7 +594,7 @@ class SmartHQAutoWarmMinutesNumber(_SmartHQAutoWarmDurationBase):
 
     def __init__(self, hass, entry, device_id, service_id, dev_name, unique_id):
         super().__init__(hass, entry, device_id, service_id, dev_name, unique_id)
-        self._attr_name = f"{dev_name} Auto Warm Duration Minutes"
+        self._attr_name = f"{dev_name} Keep Warm Time Minutes"
 
     @property
     def native_value(self) -> float | None:

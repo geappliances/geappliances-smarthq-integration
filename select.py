@@ -149,7 +149,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     # warm.auto temperature → 라벨 고정 + Warm 모드일 때만 활성화
                     warm_mode_only = "warm.auto" in dom
                     if warm_mode_only:
-                        label = "Auto Warm Temperature"
+                        label = "Keep Warm Temperature"
                     entities.append(SmartHQTemperatureSetpointSelect(
                         hass=hass, entry=entry, client=client,
                         device_id=device_id, service_id=service_id,
@@ -569,6 +569,14 @@ class SmartHQCookingModeSelect(SelectEntity):
 
         # Build options from all_domains
         self._domain_to_name: Dict[str, str] = {d: _pretty(d) for d in all_domains if d}
+        # Smoker-specific label overrides: cooking.warm → "Keep Warm"
+        # (Smoker has cooking.food.* domains; other devices with cooking.warm
+        #  e.g. Toaster Oven keep the generic "Warm" label)
+        _is_smoker = any("cooking.food." in d for d in all_domains if d)
+        if _is_smoker and any(d.endswith("cooking.warm") for d in all_domains if d):
+            for d in list(self._domain_to_name):
+                if d.endswith("cooking.warm"):
+                    self._domain_to_name[d] = "Keep Warm"
         self._name_to_domain: Dict[str, str] = {v: k for k, v in self._domain_to_name.items()}
         self._attr_options = list(self._name_to_domain.keys())
 
