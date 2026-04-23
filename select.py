@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -150,6 +151,10 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     warm_mode_only = "warm.auto" in dom
                     if warm_mode_only:
                         label = "Keep Warm Temperature"
+                    # early.temperature (Early Alert threshold) → diagnostic, disabled by default
+                    _disabled_by_default = "early.temperature" in dom
+                    if _disabled_by_default:
+                        label = "Early Alert Temperature"
                     entities.append(SmartHQTemperatureSetpointSelect(
                         hass=hass, entry=entry, client=client,
                         device_id=device_id, service_id=service_id,
@@ -157,6 +162,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
                         min_f=float(min_f), max_f=float(max_f),
                         unique_id=make_unique_id(device_id, service_id, "temp_setpoint_select"),
                         warm_mode_only=warm_mode_only,
+                        disabled_by_default=_disabled_by_default,
                     ))
 
             # ── standard mode select ────────────────────────────────────────
@@ -408,7 +414,8 @@ class SmartHQModeSelect(SelectEntity):
     _attr_has_entity_name = True
 
     def __init__(self, hass, entry, client, device_id, service_id,
-                 dev_name, dom, cfg, unique_id, sdev: str = ""):
+                 dev_name, dom, cfg, unique_id, sdev: str = "",
+                 disabled_by_default: bool = False):
         self.hass = hass
         self._entry = entry
         self._client = client
@@ -423,6 +430,10 @@ class SmartHQModeSelect(SelectEntity):
         label = f"{_prefix} {dom_tail}".strip() if _prefix else dom_tail
         self._attr_name = f"{dev_name} {label}"
         self._attr_icon = None
+
+        if disabled_by_default:
+            self._attr_entity_registry_enabled_default = False
+            self._attr_entity_category = EntityCategory.DIAGNOSTIC
 
         # Build initial options from coordinator config
         self._token_to_name: Dict[str, str] = {}
@@ -1135,7 +1146,7 @@ class SmartHQTemperatureSetpointSelect(SelectEntity):
 
     def __init__(self, hass, entry, client, device_id, service_id,
                  dev_name, label, min_f: float, max_f: float, unique_id,
-                 warm_mode_only: bool = False):
+                 warm_mode_only: bool = False, disabled_by_default: bool = False):
         self.hass = hass
         self._entry = entry
         self._client = client
@@ -1146,6 +1157,9 @@ class SmartHQTemperatureSetpointSelect(SelectEntity):
         self._warm_mode_only = warm_mode_only
         self._attr_unique_id = unique_id
         self._attr_name = f"{dev_name} {label}"
+        if disabled_by_default:
+            self._attr_entity_registry_enabled_default = False
+            self._attr_entity_category = EntityCategory.DIAGNOSTIC
 
     # ------------------------------------------------------------------
     # Helpers

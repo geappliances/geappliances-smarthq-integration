@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfTemperature, UnitOfTime
+from homeassistant.const import EntityCategory, UnitOfTemperature, UnitOfTime
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -183,6 +183,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     min_val=min_val, max_val=max_val, unit=ha_unit,
                     unique_id=make_unique_id(device_id, service_id, "int_number"),
                     enabled_default=enabled_default,
+                    entity_category=entity_category,
                     warm_mode_only=False,
                 ))
 
@@ -337,13 +338,16 @@ class SmartHQIntegerNumber(_SmartHQNumberBase):
 
     def __init__(self, hass, entry, device_id, service_id,
                  dev_name, label, min_val, max_val, unit, unique_id,
-                 enabled_default: bool = True, warm_mode_only: bool = False):
+                 enabled_default: bool = True, warm_mode_only: bool = False,
+                 entity_category=None):
         super().__init__(hass, entry, device_id, service_id, dev_name, label, unique_id)
         self._attr_native_min_value = min_val
         self._attr_native_max_value = max_val
         self._attr_native_unit_of_measurement = unit
         self._attr_entity_registry_enabled_default = enabled_default
         self._warm_mode_only = warm_mode_only
+        if entity_category is not None:
+            self._attr_entity_category = entity_category
 
     def _get_state(self) -> dict:
         """WS snapshot first, then coordinator.data fallback."""
@@ -410,11 +414,23 @@ class SmartHQIntegerNumber(_SmartHQNumberBase):
         if client:
             snap = _snapshot_for(self.hass, self._entry, self._device_id)
             svc_dict = (snap.get("services") or {}).get(self._service_id) or {}
+            # Fallback: build svc_dict from coordinator.data if snapshot is empty
+            if not svc_dict.get("serviceType"):
+                bucket = _bucket(self.hass, self._entry)
+                coordinator = bucket.get("coordinator")
+                if coordinator and coordinator.data:
+                    dev_data = coordinator.data.get(self._device_id) or {}
+                    for svc in (dev_data.get("item") or {}).get("services") or []:
+                        if isinstance(svc, dict):
+                            sid = svc.get("id") or svc.get("serviceId") or ""
+                            if sid == self._service_id:
+                                svc_dict = svc
+                                break
             await client.async_send_service_command(
                 device_id=self._device_id,
                 service=svc_dict,
                 command_type=CMD_INTEGER_SET,
-                command_params={"value": value},
+                command_params={"value": int(value)},
             )
         self.async_write_ha_state()
 

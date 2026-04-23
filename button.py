@@ -125,13 +125,19 @@ async def async_setup_entry(hass, entry, async_add_entities):
             service_id = svc.get("id") or svc.get("serviceId") or ""
             cmds = svc.get("supportedCommands") or []
 
-            # ── trigger → button ────────────────────────────────────────────
+            # ── trigger → button ────────────────────────────────────
             if stype == TRIGGER_SERVICE:
                 label = dom.split(".")[-1].replace("_", " ").title() if dom else "Trigger"
+                # Factory reset and restore-defaults are diagnostic/dangerous;
+                # disable by default so they don't appear in the main UI.
+                _disabled_by_default = any(
+                    kw in dom for kw in ("factory", "restore")
+                )
                 entities.append(SmartHQTriggerButton(
                     hass=hass, entry=entry, client=client,
                     device_id=device_id, service_id=service_id,
-                    dev_name=dev_name, label=label,
+                    dev_name=dev_name, label=label, svc=svc,
+                    disabled_by_default=_disabled_by_default,
                     unique_id=make_unique_id(device_id, service_id, "trigger"),
                 ))
 
@@ -274,25 +280,32 @@ class SmartHQTriggerButton(_SmartHQButtonBase):
     """Button for a trigger service — sends trigger.do with no parameters."""
 
     _attr_icon = "mdi:gesture-tap-button"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, hass, entry, client, device_id, service_id,
-                 dev_name, label, unique_id):
+                 dev_name, label, svc, unique_id, disabled_by_default=False):
         super().__init__(hass, entry, device_id, dev_name, unique_id)
         self._client = client
         self._service_id = service_id
+        self._svc = svc  # full service dict for async_send_service_command
         self._attr_name = f"{dev_name} {label}"
+        self._attr_entity_registry_enabled_default = not disabled_by_default
 
     async def async_press(self) -> None:
-        if self._client:
-            await self._client.async_send_service_command(
-                device_id=self._device_id,
-                service_id=self._service_id,
-                command_type=CMD_TRIGGER_DO,
-                params={},
-            )
-            _LOGGER.info("[TRIGGER] Sent trigger.do for %s", self._attr_name)
-        else:
+        client = self._client or _bucket(self.hass, self._entry).get("client")
+        if not client:
             _LOGGER.error("[TRIGGER] WebSocket client not available")
+            return
+        try:
+            await client.async_send_service_command(
+                device_id=self._device_id,
+                service=self._svc,
+                command_type=CMD_TRIGGER_DO,
+                command_params={},
+            )
+            _LOGGER.info("[TRIGGER] ✓ Sent trigger.do for %s", self._attr_name)
+        except Exception as exc:
+            _LOGGER.error("[TRIGGER] ✗ Failed for %s: %s", self._attr_name, exc)
 
 
 class SmartHQFirmwareUpgradeButton(_SmartHQButtonBase):
