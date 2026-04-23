@@ -354,6 +354,23 @@ async def async_setup_entry(hass, entry, async_add_entities):
                         unique_id=make_unique_id(device_id, device_id, "cook_numeric_option"),
                     ))
 
+                # Smoke Level select (0–5 integer, smoke units) — Smoker only
+                has_smoke = any(
+                    (s.get("config") or {}).get("numericOptionSupported")
+                    in ("cloud.smarthq.type.parameter.required",
+                        "cloud.smarthq.type.parameter.optional",
+                        "cloud.smarthq.type.parameter.defaulted")
+                    and "smoke" in (s.get("config") or {}).get("numericOptionUnits", "").lower()
+                    for s in food_svcs
+                )
+                if has_smoke:
+                    entities.append(SmartHQSmokeLevelSelect(
+                        hass=hass, entry=entry,
+                        device_id=device_id, dev_name=dev_name,
+                        cooking_svcs=food_svcs,
+                        unique_id=make_unique_id(device_id, device_id, "smoke_level_select"),
+                    ))
+
         # ── aggregate laundry.mode.v1 → one select per device ───────────────────────
         if laundry_mode_svcs:
             rep = laundry_mode_svcs[0]
@@ -1008,6 +1025,87 @@ class SmartHQCookNumericOptionSelect(_SmartHQCookParamSelectBase):
         val = self._value_for_label(svc, option)
         self._pending_params()["numeric_option"] = val
         _LOGGER.info("[COOK_NUMERIC] Set to %s (%s)", option, val)
+        self.schedule_update_ha_state()
+
+    @callback
+    def _signal_update(self) -> None:
+        self.async_write_ha_state()
+
+
+class SmartHQSmokeLevelSelect(_SmartHQCookParamSelectBase):
+    """Smoke Level select (0–5) for Smoker devices.
+
+    Level 0 = No Smoke, 1–5 = increasing intensity.
+    Stored in pending_cook_params["smoke_level"] and sent with cooking mode command.
+    Available whenever a cook mode that supports smoke is pending.
+    """
+
+    _attr_icon = "mdi:smoke"
+
+    _LEVEL_LABELS = {
+        0: "0 - No Smoke",
+        1: "1 - Very Light",
+        2: "2 - Light",
+        3: "3 - Medium",
+        4: "4 - Heavy",
+        5: "5 - Extra Heavy",
+    }
+
+    def __init__(self, hass, entry, device_id, dev_name, cooking_svcs, unique_id):
+        super().__init__(hass, entry, device_id, dev_name, cooking_svcs, unique_id)
+        self._attr_name = f"{dev_name} Smoke Level"
+        self._attr_options = list(self._LEVEL_LABELS.values())
+
+    def _svc_supports_smoke(self, svc: dict | None) -> bool:
+        if not svc:
+            return False
+        cfg = svc.get("config") or {}
+        supported = cfg.get("numericOptionSupported") in (
+            "cloud.smarthq.type.parameter.required",
+            "cloud.smarthq.type.parameter.optional",
+            "cloud.smarthq.type.parameter.defaulted",
+        )
+        is_smoke = "smoke" in (cfg.get("numericOptionUnits") or "").lower()
+        return supported and is_smoke
+
+    @property
+    def available(self) -> bool:
+        # Available for any mode that has smoke-unit numericOption support.
+        # Falls back to True if no mode is pending but the device has smoke svcs.
+        token = self._pending_mode_token()
+        if token:
+            svc = self._svc_for_pending()
+            return self._svc_supports_smoke(svc)
+        # No pending mode: available if at least one food svc supports smoke
+        return any(self._svc_supports_smoke(s) for s in self._cooking_svcs)
+
+    @property
+    def options(self) -> list[str]:
+        return list(self._LEVEL_LABELS.values())
+
+    @property
+    def current_option(self) -> str | None:
+        val = self._pending_params().get("smoke_level")
+        if val is None:
+            # Read from WS snapshot (active cooking session)
+            snap = _snapshot_for(self.hass, self._entry, self._device_id)
+            for st in (snap.get("services") or {}).values():
+                if isinstance(st, dict) and "numericOptionValue" in st:
+                    nv = st.get("numericOptionValue")
+                    if nv is not None:
+                        val = int(nv)
+                        break
+        if val is None:
+            val = 3  # default mid-level
+        return self._LEVEL_LABELS.get(int(val), str(val))
+
+    async def async_select_option(self, option: str) -> None:
+        # Reverse lookup label → integer
+        val = next((k for k, v in self._LEVEL_LABELS.items() if v == option), None)
+        if val is None:
+            return
+        self._pending_params()["smoke_level"] = val
+        _LOGGER.info("[SMOKE_LEVEL] Set to %s (%s)", option, val)
         self.schedule_update_ha_state()
 
     @callback

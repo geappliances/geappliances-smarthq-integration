@@ -729,10 +729,7 @@ def _make_cooking_numbers(hass, entry, device_id: str, dev_name: str, services_l
             has_probe=has_probe_temp,
         ))
     if has_smoke_level:
-        entities.append(SmartHQSmokeLevelNumber(
-            hass=hass, entry=entry, device_id=device_id, dev_name=dev_name,
-            unique_id=make_unique_id(device_id, device_id, "smoke_level"),
-        ))
+        pass  # Smoke Level is now handled as a select in select.py (SmartHQSmokeLevelSelect)
 
     _LOGGER.info(
         "[COOKING_NUMBERS] device=%s  cavity=%s cook_time=%s probe=%s smoke=%s → %d entities",
