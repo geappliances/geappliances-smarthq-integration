@@ -46,7 +46,18 @@ This means **no hardcoded device support is needed** — any appliance commissio
 
 ## Installation
 
-### 1. Install the Integration
+### Option A: Install via HACS (Recommended)
+
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=geappliances&repository=geappliances-smarthq-integration&category=integration)
+
+1. Click the button above — your Home Assistant will open the HACS custom repository dialog automatically
+2. Click **"Download"** to install the integration
+3. Restart Home Assistant
+
+> **Don't have HACS?** Install it from [hacs.xyz](https://hacs.xyz/docs/use/download/download/) first, then return here.
+
+### Option B: Manual Installation
+
 Copy this folder to your Home Assistant configuration directory:
 ```bash
 /config/custom_components/smarthq
