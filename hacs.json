@@ -1,7 +1,7 @@
 {
   "name": "SmartHQ",
   "content_in_root": false,
-  "filename": "smarthq",
+  "render_readme": true,
   "country": ["US"],
   "homeassistant": "2023.9.0"
 }
