@@ -1,5 +1,14 @@
 # SmartHQ Home Assistant Integration
 
+[![GitHub Release](https://img.shields.io/github/v/release/geappliances/geappliances-smarthq-integration?style=flat-square&color=orange&label=RELEASE)](https://github.com/geappliances/geappliances-smarthq-integration/releases)
+[![License: BSD 3-Clause](https://img.shields.io/badge/LICENSE-BSD--3--CLAUSE-green?style=flat-square)](https://github.com/geappliances/geappliances-smarthq-integration/blob/main/LICENSE)
+[![HACS](https://img.shields.io/badge/HACS-Custom-41BDF5?style=flat-square)](https://github.com/hacs/integration)
+[![Community](https://img.shields.io/badge/COMMUNITY-forum-blue?style=flat-square)](https://community.home-assistant.io)
+
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=geappliances&repository=geappliances-smarthq-integration&category=integration)
+
+---
+
 Home Assistant custom integration for GE Appliances SmartHQ connected devices.
 
 This integration uses **OAuth2 Application Credentials** with Authorization Code flow (no PKCE, empty scope).
