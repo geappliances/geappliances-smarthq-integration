@@ -32,6 +32,8 @@ from .service_registry import (
     CMD_ACCENT_LIGHT_SET,
     get_device_services,
     make_unique_id,
+    get_service_mapping,
+    is_platform_mapped,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -71,6 +73,13 @@ async def async_setup_entry(
             config = svc.get("config") or {}
 
             if not service_id:
+                continue
+
+            # ── Allowlist check ──
+            if get_service_mapping(stype) is None:
+                _LOGGER.debug("[LIGHT] Skipping unmapped serviceType=%s", stype)
+                continue
+            if not is_platform_mapped(stype, "light"):
                 continue
 
             # ── color service ────────────────────────────────────────────────

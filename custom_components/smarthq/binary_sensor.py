@@ -41,6 +41,8 @@ from .service_registry import (
     COFFEEBREWER_V2_SERVICE,
     COMMON_ALERTS,
     make_unique_id,
+    get_service_mapping,
+    is_platform_mapped,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -143,6 +145,13 @@ async def async_setup_entry(
 
                 stype = svc.get("serviceType") or ""
                 service_id = svc.get("id") or svc.get("serviceId") or ""
+
+                # ── Allowlist check ──
+                if get_service_mapping(stype) is None:
+                    _LOGGER.debug("[BINARY_SENSOR] Skipping unmapped serviceType=%s", stype)
+                    continue
+                if not is_platform_mapped(stype, "binary_sensor"):
+                    continue
 
                 if stype == FIRMWARE_SERVICE:
                     uid = make_unique_id(device_id, service_id, "fw_update")

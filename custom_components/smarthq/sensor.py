@@ -84,6 +84,8 @@ from .service_registry import (
     METER_DOMAIN_UNIT_CLASS,
     get_device_services,
     make_unique_id,
+    get_service_mapping,
+    is_platform_mapped,
 )
 
 
@@ -1170,6 +1172,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 service_id = svc.get("id") or svc.get("serviceId") or ""
                 cmds: list = svc.get("supportedCommands") or []
                 cfg = svc.get("config") or {}
+
+                # ── Allowlist check ──
+                if get_service_mapping(stype) is None:
+                    _LOGGER.debug("[SENSOR] Skipping unmapped serviceType=%s", stype)
+                    continue
+                if not is_platform_mapped(stype, "sensor"):
+                    continue
 
                 # ── temperature sensor (read-only) ──────────────────────────
                 if stype == TEMPERATURE_SERVICE and CMD_TEMPERATURE_SET not in cmds:

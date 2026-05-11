@@ -4,10 +4,13 @@ Entity registration is driven by:
   1. coordinator.data[device_id]["item"]["services"]  (WS-based service switches)
   2. coordinator.data[device_id]["settings"]           (REST-based notification/alert toggles)
 
-Service → entity mapping:
-  toggle  + CMD_TOGGLE_SET                               → SmartHQToggleSwitch
-  mode    + CMD_MODE_SET + domain in SWITCH_MODE_DOMAINS → SmartHQModeSwitch
-  settings (type=BOOLEAN)                                → SmartHQSettingSwitch
+Service → entity mapping (via SERVICE_MAPPING allowlist):
+  toggle              + CMD_TOGGLE_SET                               → SmartHQToggleSwitch
+  mode                + CMD_MODE_SET + domain in SWITCH_MODE_DOMAINS → SmartHQModeSwitch
+  laundry.toggle.v2   + CMD_LAUNDRY_TOGGLE_V2_SET                   → SmartHQLaundryToggleSwitch
+  settings (type=BOOLEAN)                                            → SmartHQSettingSwitch
+
+ServiceTypes NOT in SERVICE_MAPPING are silently ignored (allowlist approach).
 """
 from __future__ import annotations
 
@@ -32,6 +35,8 @@ from .service_registry import (
     CMD_LAUNDRY_TOGGLE_V2_SET,
     SWITCH_MODE_DOMAINS,
     make_unique_id,
+    get_service_mapping,
+    is_platform_mapped,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -136,6 +141,16 @@ async def async_setup_entry(hass, entry, async_add_entities):
             service_id = svc.get("id") or svc.get("serviceId") or ""
             cmds = svc.get("supportedCommands") or []
 
+            # ── Allowlist check: skip serviceTypes not in SERVICE_MAPPING ──
+            if get_service_mapping(stype) is None:
+                _LOGGER.debug("[SWITCH] Skipping unmapped serviceType=%s svc=%s", stype, service_id)
+                continue
+
+            # ── Skip serviceTypes not mapped to switch platform ──
+            if not is_platform_mapped(stype, "switch"):
+                continue
+
+            # ── Route to entity builder based on serviceType ──
             if stype == TOGGLE_SERVICE and CMD_TOGGLE_SET in cmds:
                 label, icon = _label_for_toggle(dom, svc.get("serviceDeviceType") or "")
                 entities.append(SmartHQToggleSwitch(

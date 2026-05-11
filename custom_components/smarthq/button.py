@@ -50,6 +50,8 @@ from .service_registry import (
     CMD_MIXER_CANCEL,
     CMD_MIXER_PAUSE,
     make_unique_id,
+    get_service_mapping,
+    is_platform_mapped,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -124,6 +126,13 @@ async def async_setup_entry(hass, entry, async_add_entities):
             dom = svc.get("domainType") or ""
             service_id = svc.get("id") or svc.get("serviceId") or ""
             cmds = svc.get("supportedCommands") or []
+
+            # ── Allowlist check ──
+            if get_service_mapping(stype) is None:
+                _LOGGER.debug("[BUTTON] Skipping unmapped serviceType=%s", stype)
+                continue
+            if not is_platform_mapped(stype, "button"):
+                continue
 
             # ── trigger → button ────────────────────────────────────
             if stype == TRIGGER_SERVICE:

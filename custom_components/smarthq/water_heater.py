@@ -24,6 +24,8 @@ from .service_registry import (
     WATERHEATER_SERVICE,
     get_device_services,
     make_unique_id,
+    get_service_mapping,
+    is_platform_mapped,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -97,6 +99,13 @@ async def async_setup_entry(
             stype = svc.get("serviceType") or ""
             service_id = svc.get("serviceId") or ""
             if not service_id:
+                continue
+
+            # ── Allowlist check ──
+            if get_service_mapping(stype) is None:
+                _LOGGER.debug("[WATER_HEATER] Skipping unmapped serviceType=%s", stype)
+                continue
+            if not is_platform_mapped(stype, "water_heater"):
                 continue
 
             if stype == WATERHEATER_SERVICE:

@@ -50,6 +50,8 @@ from .service_registry import (
     READONLY_MODE_DOMAINS,
     make_unique_id,
     is_cooking_mode_domain,
+    get_service_mapping,
+    is_platform_mapped,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -133,6 +135,13 @@ async def async_setup_entry(hass, entry, async_add_entities):
             service_id = svc.get("id") or svc.get("serviceId") or ""
             cmds = svc.get("supportedCommands") or []
             cfg = svc.get("config") or {}
+
+            # ── Allowlist check ──
+            if get_service_mapping(stype) is None:
+                _LOGGER.debug("[SELECT] Skipping unmapped serviceType=%s", stype)
+                continue
+            if not is_platform_mapped(stype, "select"):
+                continue
 
             # ── temperature setpoint select (small integer range) ─────────────
             # When fahrenheitMaximum - fahrenheitMinimum <= 30, expose as a
@@ -301,6 +310,58 @@ async def async_setup_entry(hass, entry, async_add_entities):
                         hass=hass, entry=entry,
                         device_id=device_id, dev_name=dev_name,
                         unique_id=make_unique_id(device_id, device_id, "cook_target_method"),
+                    ))
+
+                # ── Cooking Temp select (cavity temperature) ──────────────────
+                # Created for ANY cooking device that supports cavityTemperature
+                # (Smoker, Toaster Oven, Oven, etc.).
+                # ProbeTargetSelect is smoker-only (has_probe).
+                has_cavity_temp = any(
+                    (s.get("config") or {}).get("cavityTemperatureSupported")
+                    in ("cloud.smarthq.type.parameter.required",
+                        "cloud.smarthq.type.parameter.optional",
+                        "cloud.smarthq.type.parameter.defaulted")
+                    for s in food_svcs
+                )
+                if has_cavity_temp:
+                    _cavity_min_f = min(
+                        (float((s.get("config") or {}).get("cavityTemperatureFahrenheitMinimum", 100))
+                         for s in food_svcs
+                         if (s.get("config") or {}).get("cavityTemperatureFahrenheitMinimum")),
+                        default=100.0,
+                    )
+                    _cavity_max_f = max(
+                        (float((s.get("config") or {}).get("cavityTemperatureFahrenheitMaximum", 300))
+                         for s in food_svcs
+                         if (s.get("config") or {}).get("cavityTemperatureFahrenheitMaximum")),
+                        default=300.0,
+                    )
+                    entities.append(SmartHQSmokerTempSelect(
+                        hass=hass, entry=entry,
+                        device_id=device_id, dev_name=dev_name,
+                        unique_id=make_unique_id(device_id, device_id, "smoker_temp"),
+                        min_f=_cavity_min_f, max_f=_cavity_max_f,
+                        is_smoker=has_probe,
+                        cooking_svcs=food_svcs,
+                    ))
+                if has_probe:
+                    _probe_min_f = min(
+                        (float((s.get("config") or {}).get("probeTemperatureFahrenheitMinimum", 100))
+                         for s in food_svcs
+                         if (s.get("config") or {}).get("probeTemperatureFahrenheitMinimum")),
+                        default=100.0,
+                    )
+                    _probe_max_f = max(
+                        (float((s.get("config") or {}).get("probeTemperatureFahrenheitMaximum", 210))
+                         for s in food_svcs
+                         if (s.get("config") or {}).get("probeTemperatureFahrenheitMaximum")),
+                        default=210.0,
+                    )
+                    entities.append(SmartHQProbeTargetSelect(
+                        hass=hass, entry=entry,
+                        device_id=device_id, dev_name=dev_name,
+                        unique_id=make_unique_id(device_id, device_id, "probe_target"),
+                        min_f=_probe_min_f, max_f=_probe_max_f,
                     ))
 
                 # ── Mode-specific parameter selects ──────────────────────────
@@ -2205,4 +2266,190 @@ class SmartHQCookTargetMethodSelect(SelectEntity):
 
     @callback
     def _signal_update(self) -> None:
+        self.async_write_ha_state()
+
+
+class _SmartHQSmokerTempSelectBase(SelectEntity):
+    """Base class for Smoker temperature selects (Cavity Temp, Probe Target).
+
+    Options are generated from API fahrenheit min/max, displayed in the
+    device's temperature unit (°C or °F). Values are stored in
+    pending_cook_params and sent as a batch via Send To Smoker button.
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+
+    def __init__(self, hass, entry, device_id: str, dev_name: str, unique_id: str,
+                 min_f: float, max_f: float, cooking_svcs: list | None = None) -> None:
+        self.hass = hass
+        self._entry = entry
+        self._device_id = device_id
+        self._attr_unique_id = unique_id
+        self._min_f = min_f
+        self._max_f = max_f
+        self._cooking_svcs = cooking_svcs or []
+
+    def _pending(self) -> dict:
+        bucket = _bucket(self.hass, self._entry)
+        return bucket.setdefault("pending_cook_params", {}).setdefault(
+            self._device_id, {"is_probe_based": True}
+        )
+
+    def _current_mode_token(self) -> str | None:
+        bucket = _bucket(self.hass, self._entry)
+        return (bucket.get("pending_cook_modes") or {}).get(self._device_id, {}).get("mode_token")
+
+    def _mode_supports_cavity_temp(self) -> bool:
+        """Return True if the current pending cook mode supports cavity temperature."""
+        token = self._current_mode_token()
+        if token is None:
+            # No mode selected yet — show by default if any mode supports it
+            return bool(self._cooking_svcs)
+        for s in self._cooking_svcs:
+            if s.get("domainType") == token:
+                supported = (s.get("config") or {}).get("cavityTemperatureSupported")
+                return supported in (
+                    "cloud.smarthq.type.parameter.required",
+                    "cloud.smarthq.type.parameter.optional",
+                    "cloud.smarthq.type.parameter.defaulted",
+                )
+        return False
+
+    def _device_is_f(self) -> bool:
+        from .sensor import _device_temp_is_f
+        return _device_temp_is_f(self.hass, self._entry, self._device_id)
+
+    def _f_to_display(self, f: float) -> int:
+        if self._device_is_f():
+            return round(f)
+        return round((f - 32) * 5 / 9)
+
+    def _display_to_f(self, v: float) -> float:
+        if self._device_is_f():
+            return float(v)
+        return float(v) * 9 / 5 + 32
+
+    def _build_options(self) -> list:
+        lo = self._f_to_display(self._min_f)
+        hi = self._f_to_display(self._max_f)
+        unit = "\u00b0F" if self._device_is_f() else "\u00b0C"
+        return [f"{v}{unit}" for v in range(int(lo), int(hi) + 1)]
+
+    @property
+    def options(self) -> list:
+        return self._build_options()
+
+    @property
+    def available(self) -> bool:
+        snap = _snapshot_for(self.hass, self._entry, self._device_id)
+        return bool(snap)
+
+    @property
+    def device_info(self):
+        return _device_info_for(self.hass, self._entry, self._device_id)
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_DEVICE_UPDATED.format(device_id=self._device_id),
+                self._signal_update,
+            )
+        )
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_COOK_MODE_CHANGED.format(device_id=self._device_id),
+                self._signal_update,
+            )
+        )
+        self._signal_update()
+
+    @callback
+    def _signal_update(self) -> None:
+        self.async_write_ha_state()
+
+
+class SmartHQSmokerTempSelect(_SmartHQSmokerTempSelectBase):
+    """Cooking cavity temperature as a stepped select.
+
+    Used for Smoker ("Smoker Temp") and Toaster Oven/Oven ("Cook Temperature").
+    """
+
+    def __init__(self, hass, entry, device_id: str, dev_name: str, unique_id: str,
+                 min_f: float, max_f: float, is_smoker: bool = False,
+                 cooking_svcs: list | None = None) -> None:
+        super().__init__(hass, entry, device_id, dev_name, unique_id, min_f, max_f, cooking_svcs)
+        if is_smoker:
+            self._attr_name = f"{dev_name} Smoker Temp"
+            self._attr_icon = "mdi:thermometer"
+        else:
+            self._attr_name = f"{dev_name} Cook Temperature"
+            self._attr_icon = "mdi:thermometer"
+
+    @property
+    def current_option(self):
+        p = self._pending()
+        if "smoker_temp_f" in p:
+            v = self._f_to_display(float(p["smoker_temp_f"]))
+        else:
+            snap = _snapshot_for(self.hass, self._entry, self._device_id)
+            for st in (snap.get("services") or {}).values():
+                if isinstance(st, dict) and "cavityFahrenheit" in st:
+                    v = self._f_to_display(float(st["cavityFahrenheit"]))
+                    break
+            else:
+                return None
+        unit = "\u00b0F" if self._device_is_f() else "\u00b0C"
+        return f"{int(v)}{unit}"
+
+    async def async_select_option(self, option: str) -> None:
+        val = float(option.replace("\u00b0F", "").replace("\u00b0C", "").strip())
+        f_val = int(self._display_to_f(val))
+        self._pending()["smoker_temp_f"] = f_val
+        _LOGGER.info("[SMOKER_TEMP_SELECT] Set to %s\u00b0F (display: %s)", f_val, option)
+        self.async_write_ha_state()
+
+
+class SmartHQProbeTargetSelect(_SmartHQSmokerTempSelectBase):
+    """Probe target temperature as a stepped select.
+
+    Only available when Cook Target Method = Probe Temp.
+    """
+
+    def __init__(self, hass, entry, device_id: str, dev_name: str, unique_id: str,
+                 min_f: float, max_f: float) -> None:
+        super().__init__(hass, entry, device_id, dev_name, unique_id, min_f, max_f)
+        self._attr_name = f"{dev_name} Probe Target"
+        self._attr_icon = "mdi:thermometer-probe"
+
+    @property
+    def available(self) -> bool:
+        snap = _snapshot_for(self.hass, self._entry, self._device_id)
+        if not snap:
+            return False
+        return self._pending().get("is_probe_based", True)
+
+    @property
+    def current_option(self):
+        p = self._pending()
+        if "probe_target_f" in p:
+            v = self._f_to_display(float(p["probe_target_f"]))
+        else:
+            snap = _snapshot_for(self.hass, self._entry, self._device_id)
+            for st in (snap.get("services") or {}).values():
+                if isinstance(st, dict) and "probeFahrenheit" in st:
+                    v = self._f_to_display(float(st["probeFahrenheit"]))
+                    break
+            else:
+                return None
+        unit = "\u00b0F" if self._device_is_f() else "\u00b0C"
+        return f"{int(v)}{unit}"
+
+    async def async_select_option(self, option: str) -> None:
+        val = float(option.replace("\u00b0F", "").replace("\u00b0C", "").strip())
+        f_val = int(self._display_to_f(val))
+        self._pending()["probe_target_f"] = f_val
+        _LOGGER.info("[PROBE_TARGET_SELECT] Set to %s\u00b0F (display: %s)", f_val, option)
         self.async_write_ha_state()
