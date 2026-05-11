@@ -58,6 +58,46 @@ _LOGGER = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Data-driven WS button specs
+# Each entry maps a serviceType → list of (label, cmd, uid_sfx, icon) buttons.
+# cls "DW"  → SmartHQDishwasherStateButton(ws, label, cmd, uid)
+# cls "ADV" → SmartHQAdvantiumButton(ws, label, cmd, icon, uid)
+# label_prefix is prepended to each button label (e.g. "Dishdrawer ").
+# ---------------------------------------------------------------------------
+from dataclasses import dataclass as _dc, field as _field
+
+@_dc
+class _WBSpec:
+    buttons: list   # list of (label, cmd, uid_sfx, icon)
+    cls: str        # "DW" or "ADV"
+    label_prefix: str = ""
+
+
+_WS_BUTTON_SPECS: dict[str, _WBSpec] = {
+    DISHWASHER_STATE_V1_SERVICE: _WBSpec(cls="DW", buttons=[
+        ("Start", CMD_DISHWASHER_STATE_START, "dw_start",  ""),
+        ("Stop",  CMD_DISHWASHER_STATE_STOP,  "dw_stop",   ""),
+        ("Pause", CMD_DISHWASHER_STATE_PAUSE, "dw_pause",  ""),
+    ]),
+    DISHDRAWER_STATE_LEGACY_SERVICE: _WBSpec(cls="DW", label_prefix="Dishdrawer ", buttons=[
+        ("Start", CMD_DISHDRAWER_STATE_LEGACY_START, "ddr_start", ""),
+        ("Stop",  CMD_DISHDRAWER_STATE_LEGACY_STOP,  "ddr_stop",  ""),
+        ("Pause", CMD_DISHDRAWER_STATE_LEGACY_PAUSE, "ddr_pause", ""),
+    ]),
+    COOKING_ADVANTIUM_SERVICE: _WBSpec(cls="ADV", buttons=[
+        ("Start",  CMD_ADVANTIUM_START,  "adv_start",  "mdi:play"),
+        ("Stop",   CMD_ADVANTIUM_STOP,   "adv_stop",   "mdi:stop"),
+        ("Pause",  CMD_ADVANTIUM_PAUSE,  "adv_pause",  "mdi:pause"),
+        ("Resume", CMD_ADVANTIUM_RESUME, "adv_resume", "mdi:play-pause"),
+    ]),
+    MIXER_SERVICE: _WBSpec(cls="ADV", buttons=[
+        ("Cancel", CMD_MIXER_CANCEL, "mixer_cancel", "mdi:stop"),
+        ("Pause",  CMD_MIXER_PAUSE,  "mixer_pause",  "mdi:pause"),
+    ]),
+}
+
+
+# ---------------------------------------------------------------------------
 # Store helpers
 # ---------------------------------------------------------------------------
 
@@ -180,77 +220,30 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     if "cooking.food." in dom:
                         has_probe_mode = True
 
-            # ── dishwasher.state.v1 → start/stop/pause buttons ────────────────
-            elif stype == DISHWASHER_STATE_V1_SERVICE:
+            # ── dishwasher/dishdrawer/advantium/mixer WS buttons (data-driven) ──
+            elif stype in _WS_BUTTON_SPECS:
                 ws = bucket.get("client") or bucket.get("ws")
                 if ws:
-                    for btn_label, cmd_type, uid_sfx in [
-                        ("Start",  CMD_DISHWASHER_STATE_START, "dw_start"),
-                        ("Stop",   CMD_DISHWASHER_STATE_STOP,  "dw_stop"),
-                        ("Pause",  CMD_DISHWASHER_STATE_PAUSE, "dw_pause"),
-                    ]:
+                    spec = _WS_BUTTON_SPECS[stype]
+                    for btn_label, cmd_type, uid_sfx, icon in spec.buttons:
                         if cmd_type in cmds:
-                            entities.append(SmartHQDishwasherStateButton(
-                                hass=hass, entry=entry, ws=ws,
-                                device_id=device_id, service_id=service_id,
-                                dev_name=dev_name, label=btn_label,
-                                command_type=cmd_type,
-                                unique_id=make_unique_id(device_id, service_id, uid_sfx),
-                            ))
-
-            # ── dishdrawer.state.legacy → start/stop/pause buttons ────────────
-            elif stype == DISHDRAWER_STATE_LEGACY_SERVICE:
-                ws = bucket.get("client") or bucket.get("ws")
-                if ws:
-                    for btn_label, cmd_type, uid_sfx in [
-                        ("Start",  CMD_DISHDRAWER_STATE_LEGACY_START, "ddr_start"),
-                        ("Stop",   CMD_DISHDRAWER_STATE_LEGACY_STOP,  "ddr_stop"),
-                        ("Pause",  CMD_DISHDRAWER_STATE_LEGACY_PAUSE, "ddr_pause"),
-                    ]:
-                        if cmd_type in cmds:
-                            entities.append(SmartHQDishwasherStateButton(
-                                hass=hass, entry=entry, ws=ws,
-                                device_id=device_id, service_id=service_id,
-                                dev_name=dev_name, label=f"Dishdrawer {btn_label}",
-                                command_type=cmd_type,
-                                unique_id=make_unique_id(device_id, service_id, uid_sfx),
-                            ))
-
-            # ── cooking.advantium → start/stop/pause/resume buttons ───────────
-            elif stype == COOKING_ADVANTIUM_SERVICE:
-                ws = bucket.get("client") or bucket.get("ws")
-                if ws:
-                    for btn_label, cmd_type, uid_sfx, icon in [
-                        ("Start",  CMD_ADVANTIUM_START,  "adv_start",  "mdi:play"),
-                        ("Stop",   CMD_ADVANTIUM_STOP,   "adv_stop",   "mdi:stop"),
-                        ("Pause",  CMD_ADVANTIUM_PAUSE,  "adv_pause",  "mdi:pause"),
-                        ("Resume", CMD_ADVANTIUM_RESUME, "adv_resume", "mdi:play-pause"),
-                    ]:
-                        if cmd_type in cmds:
-                            entities.append(SmartHQAdvantiumButton(
-                                hass=hass, entry=entry, ws=ws,
-                                device_id=device_id, service_id=service_id,
-                                dev_name=dev_name, label=btn_label,
-                                command_type=cmd_type, icon=icon,
-                                unique_id=make_unique_id(device_id, service_id, uid_sfx),
-                            ))
-
-            # ── mixer.v1 → cancel/pause buttons ──────────────────────────────
-            elif stype == MIXER_SERVICE:
-                ws = bucket.get("client") or bucket.get("ws")
-                if ws:
-                    for btn_label, cmd_type, uid_sfx, icon in [
-                        ("Cancel", CMD_MIXER_CANCEL, "mixer_cancel", "mdi:stop"),
-                        ("Pause",  CMD_MIXER_PAUSE,  "mixer_pause",  "mdi:pause"),
-                    ]:
-                        if cmd_type in cmds:
-                            entities.append(SmartHQAdvantiumButton(
-                                hass=hass, entry=entry, ws=ws,
-                                device_id=device_id, service_id=service_id,
-                                dev_name=dev_name, label=btn_label,
-                                command_type=cmd_type, icon=icon,
-                                unique_id=make_unique_id(device_id, service_id, uid_sfx),
-                            ))
+                            label = f"{spec.label_prefix}{btn_label}"
+                            if spec.cls == "ADV":
+                                entities.append(SmartHQAdvantiumButton(
+                                    hass=hass, entry=entry, ws=ws,
+                                    device_id=device_id, service_id=service_id,
+                                    dev_name=dev_name, label=label,
+                                    command_type=cmd_type, icon=icon,
+                                    unique_id=make_unique_id(device_id, service_id, uid_sfx),
+                                ))
+                            else:
+                                entities.append(SmartHQDishwasherStateButton(
+                                    hass=hass, entry=entry, ws=ws,
+                                    device_id=device_id, service_id=service_id,
+                                    dev_name=dev_name, label=label,
+                                    command_type=cmd_type,
+                                    unique_id=make_unique_id(device_id, service_id, uid_sfx),
+                                ))
 
         # One cooking start button per device that has cooking.mode.v1 startable services
         if has_cooking_mode:
