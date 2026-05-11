@@ -58,6 +58,31 @@ _LOGGER = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Data-driven generic mode select specs
+# (serviceType, required_command, label, uid_suffix)
+# All create SmartHQGenericModeSelect with the given command_type.
+# ---------------------------------------------------------------------------
+from dataclasses import dataclass as _dc
+
+@_dc
+class _GMS:
+    stype: str
+    cmd: str
+    label: str
+    uid: str
+
+
+_GENERIC_MODE_SELECT_SPECS: list[_GMS] = [
+    _GMS(FLEXDISPENSE_SERVICE,          CMD_FLEXDISPENSE_MODE_SET,    "",             "flexdispense_mode"),
+    _GMS(STAINREMOVAL_SERVICE,          CMD_STAINREMOVAL_MODE_SET,    "Stain Removal","stain_removal_mode"),
+    _GMS(REMOTECYCLESELECTION_SERVICE,  CMD_REMOTECYCLESELECTION_SET, "Remote Cycle", "remote_cycle_select"),
+    _GMS(DISHWASHER_CUSTOM_CYCLE_SERVICE, CMD_DISHWASHER_CUSTOM_CYCLE_SET, "Custom Cycle", "dw_custom_cycle"),
+]
+# label="" means: derive from domainType at runtime
+_GENERIC_MODE_SELECT_BY_STYPE: dict[str, _GMS] = {s.stype: s for s in _GENERIC_MODE_SELECT_SPECS}
+
+
+# ---------------------------------------------------------------------------
 # Store helpers
 # ---------------------------------------------------------------------------
 
@@ -210,56 +235,9 @@ async def async_setup_entry(hass, entry, async_add_entities):
             elif stype == DISHWASHER_MODE_V1_SERVICE and CMD_DISHWASHER_MODE_SET in cmds:
                 dishwasher_mode_svcs.append(svc)
 
-            # ── flexdispense mode select ──────────────────────────────────────
-            elif stype == FLEXDISPENSE_SERVICE and CMD_FLEXDISPENSE_MODE_SET in cmds:
-                dom_label = dom.split(".")[-1].replace("_", " ").title() if dom else "Flex Dispense"
-                entities.append(SmartHQGenericModeSelect(
-                    hass=hass, entry=entry, client=client,
-                    device_id=device_id, service_id=service_id,
-                    dev_name=dev_name, label=f"{dom_label}",
-                    command_type=CMD_FLEXDISPENSE_MODE_SET,
-                    cfg=cfg,
-                    unique_id=make_unique_id(device_id, service_id, "flexdispense_mode"),
-                ))
-
-            # ── stainremoval mode select ──────────────────────────────────────
-            elif stype == STAINREMOVAL_SERVICE and CMD_STAINREMOVAL_MODE_SET in cmds:
-                entities.append(SmartHQGenericModeSelect(
-                    hass=hass, entry=entry, client=client,
-                    device_id=device_id, service_id=service_id,
-                    dev_name=dev_name, label="Stain Removal",
-                    command_type=CMD_STAINREMOVAL_MODE_SET,
-                    cfg=cfg,
-                    unique_id=make_unique_id(device_id, service_id, "stain_removal_mode"),
-                ))
-
-            # ── remote cycle selection select ─────────────────────────────────
-            elif stype == REMOTECYCLESELECTION_SERVICE and CMD_REMOTECYCLESELECTION_SET in cmds:
-                # config.supportedModes → list of LAUNDRY_CYCLE tokens
-                entities.append(SmartHQGenericModeSelect(
-                    hass=hass, entry=entry, client=client,
-                    device_id=device_id, service_id=service_id,
-                    dev_name=dev_name, label="Remote Cycle",
-                    command_type=CMD_REMOTECYCLESELECTION_SET,
-                    cfg=cfg,
-                    unique_id=make_unique_id(device_id, service_id, "remote_cycle_select"),
-                ))
-
             # ── dishdrawer.mode.legacy (collect for aggregation) ──────────────
             elif stype == DISHDRAWER_MODE_LEGACY_SERVICE and CMD_DISHDRAWER_MODE_LEGACY_SET in cmds:
                 dishdrawer_mode_legacy_svcs.append(svc)
-
-            # ── dishwasher.custom.cycle select ────────────────────────────────
-            elif stype == DISHWASHER_CUSTOM_CYCLE_SERVICE and CMD_DISHWASHER_CUSTOM_CYCLE_SET in cmds:
-                # config.supportedModes → list of DISHWASHER_MODE_DOMAIN tokens
-                entities.append(SmartHQGenericModeSelect(
-                    hass=hass, entry=entry, client=client,
-                    device_id=device_id, service_id=service_id,
-                    dev_name=dev_name, label="Custom Cycle",
-                    command_type=CMD_DISHWASHER_CUSTOM_CYCLE_SET,
-                    cfg=cfg,
-                    unique_id=make_unique_id(device_id, service_id, "dw_custom_cycle"),
-                ))
 
             # ── dishwasher.favorites.v1 select ────────────────────────────────
             elif stype == DISHWASHER_FAVORITES_V1_SERVICE and CMD_DISHWASHER_FAVORITES_V1_SET in cmds:
@@ -269,6 +247,20 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     dev_name=dev_name, cfg=cfg,
                     unique_id=make_unique_id(device_id, service_id, "dw_favorites"),
                 ))
+
+            # ── standard generic mode selects (data-driven) ───────────────────
+            elif stype in _GENERIC_MODE_SELECT_BY_STYPE:
+                spec = _GENERIC_MODE_SELECT_BY_STYPE[stype]
+                if spec.cmd in cmds:
+                    label = spec.label if spec.label else dom.split(".")[-1].replace("_", " ").title()
+                    entities.append(SmartHQGenericModeSelect(
+                        hass=hass, entry=entry, client=client,
+                        device_id=device_id, service_id=service_id,
+                        dev_name=dev_name, label=label,
+                        command_type=spec.cmd,
+                        cfg=cfg,
+                        unique_id=make_unique_id(device_id, service_id, spec.uid),
+                    ))
 
         # ── aggregate cooking.mode.v1 services → single cooking mode select ─
         if cooking_mode_svcs:
@@ -1505,8 +1497,9 @@ _LAUNDRY_CYCLE_LABELS: Dict[str, str] = {
     "steamfresh": "Steam Fresh", "steamnormal": "Steam Normal",
     "steamrefresh": "Steam Refresh", "steamsanitize": "Steam Sanitize",
     "synthetics": "Synthetics", "timeddry": "Timed Dry", "towels": "Towels",
+    "towelssheets": "Towels & Sheets",
     "tubclean": "Tub Clean", "ultradelicate": "Ultra Delicate",
-    "warmwash": "Warm Wash", "whites": "Whites", "wool": "Wool",
+    "warmup": "Warm Up", "warmwash": "Warm Wash", "whites": "Whites", "wool": "Wool",
 }
 
 
