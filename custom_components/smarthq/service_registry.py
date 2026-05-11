@@ -330,7 +330,7 @@ SERVICE_MAPPING: dict[str, dict] = {
     # sensor (read-only)
     TEMPERATURE_SERVICE: {
         "type": "standard",
-        "platform": ["sensor", "number", "select"],
+        "platform": ["sensor", "select"],
         "handler": "StandardTemperature",
     },
     INTEGER_SERVICE: {

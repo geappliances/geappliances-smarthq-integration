@@ -23,12 +23,10 @@ from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME, sdev_prefix
 from .dispatcher import SIGNAL_DEVICE_UPDATED, SIGNAL_COOK_MODE_CHANGED
 from .sensor import _snapshot_for, _dev_payload, _device_info_for, _integer_units_to_ha
 from .service_registry import (
-    TEMPERATURE_SERVICE,
     INTEGER_SERVICE,
     DISHDRAWER_MODE_LEGACY_SERVICE,
     COOKING_MODE_SERVICE,
     is_cooking_mode_domain,
-    CMD_TEMPERATURE_SET,
     CMD_INTEGER_SET,
     CMD_DISHDRAWER_MODE_LEGACY_SET,
     make_unique_id,
@@ -37,6 +35,18 @@ from .service_registry import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Domain-level blocklist for integer services that are internal counters
+# or device-panel-only controls not exposed in the SmartHQ app UI.
+_BLOCKED_INTEGER_DOMAINS: frozenset[str] = frozenset({
+    "cloud.smarthq.domain.inventory",
+    "cloud.smarthq.domain.inventory.consumed.large",
+    "cloud.smarthq.domain.inventory.consumed.small",
+    "cloud.smarthq.domain.inventory.consumed.timed",
+    # Delay start is set on the physical panel only; app has no remote UI for it.
+    # The 'disabled: True' state confirms the device does not accept remote writes.
+    "cloud.smarthq.domain.delay",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -99,31 +109,8 @@ async def async_setup_entry(hass, entry, async_add_entities):
             if not is_platform_mapped(stype, "number"):
                 continue
 
-            # ── temperature number (write) ──────────────────────────────────
-            # Skip generic temperature entities on Smoker devices — the dedicated
-            # SmartHQSmokerTempNumber covers that role, and the auto/temperature
-            # domain services are not meaningful in the Smoker UI.
-            if stype == TEMPERATURE_SERVICE and CMD_TEMPERATURE_SET in cmds:
-                if has_cooking_mode:
-                    continue
-                min_f = float(cfg.get("fahrenheitMinimum") or cfg.get("fahrenheitMin") or 32)
-                max_f = float(cfg.get("fahrenheitMaximum") or cfg.get("fahrenheitMax") or 500)
-                # Range ≤150°F span → handled by SmartHQTemperatureSetpointSelect in select.py
-                # (Fresh Food 8°F, Freezer 11°F, Hot Water 95°F → select)
-                # Wide ranges like oven (≥150°F) remain as number entities.
-                if (max_f - min_f) <= 150:
-                    continue
-                _sdev = svc.get("serviceDeviceType") or ""
-                _base = cfg.get("label") or dom.split(".")[-1].replace("_", " ").title()
-                _prefix = sdev_prefix(_sdev)
-                label = f"{_prefix} {_base}".strip() if _prefix else _base
-                entities.append(SmartHQTemperatureNumber(
-                    hass=hass, entry=entry,
-                    device_id=device_id, service_id=service_id,
-                    dev_name=dev_name, label=label,
-                    min_f=min_f, max_f=max_f,
-                    unique_id=make_unique_id(device_id, service_id, "temp_number"),
-                ))
+            # ── TEMPERATURE_SERVICE: all writable temp setpoints → select.py ──
+            # SmartHQTemperatureSetpointSelect handles the full API min/max range.
 
             # ── dishdrawer.mode.legacy delay start number ────────────────
             elif stype == DISHDRAWER_MODE_LEGACY_SERVICE and CMD_DISHDRAWER_MODE_LEGACY_SET in cmds:
@@ -144,6 +131,12 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
             # ── integer number (write) ──────────────────────────────────────
             elif stype == INTEGER_SERVICE and CMD_INTEGER_SET in cmds:
+                # Block internal inventory/consumed counters — not user-facing,
+                # not present in the SmartHQ app UI.
+                if dom in _BLOCKED_INTEGER_DOMAINS:
+                    _LOGGER.debug("[NUMBER] Blocking internal integer domain=%s", dom)
+                    continue
+
                 int_units = cfg.get("integerUnits") or ""
                 min_val = float(cfg.get("minimum", 0))
                 max_val = float(cfg.get("maximum", 100))
@@ -241,101 +234,6 @@ class _SmartHQNumberBase(NumberEntity):
 
     @callback
     def _signal_update(self) -> None:
-        self.async_write_ha_state()
-
-
-class SmartHQTemperatureNumber(_SmartHQNumberBase):
-    """Writable temperature service number entity.
-
-    Unit follows the device's temperatureunits setting dynamically.
-    Internal storage is always °F; values are converted on the fly.
-    For devices with no WS updates (e.g. Refrigerator), falls back to
-    coordinator.data for the initial state.
-    """
-
-    _attr_mode = NumberMode.BOX
-    _attr_device_class = "temperature"
-    _attr_native_step = 1.0
-
-    def __init__(self, hass, entry, device_id, service_id,
-                 dev_name, label, min_f, max_f, unique_id):
-        super().__init__(hass, entry, device_id, service_id, dev_name, label, unique_id)
-        self._min_f = min_f
-        self._max_f = max_f
-
-    def _get_state(self) -> dict:
-        """Return service state: WS snapshot first, then coordinator.data fallback."""
-        snap = _snapshot_for(self.hass, self._entry, self._device_id)
-        ws_st = (snap.get("services") or {}).get(self._service_id) or {}
-        if ws_st and "fahrenheit" in ws_st:
-            return ws_st
-        # Fallback: coordinator.data initial state (for devices with no WS updates)
-        bucket = _bucket(self.hass, self._entry)
-        coordinator = bucket.get("coordinator")
-        if coordinator and coordinator.data:
-            dev_data = coordinator.data.get(self._device_id) or {}
-            services_list = (dev_data.get("item") or {}).get("services") or []
-            for svc in services_list:
-                if isinstance(svc, dict):
-                    sid = svc.get("id") or svc.get("serviceId") or ""
-                    if sid == self._service_id:
-                        return svc.get("state") or {}
-        return ws_st
-
-    # ------------------------------------------------------------------
-    # Unit helpers
-    # ------------------------------------------------------------------
-    def _is_f(self) -> bool:
-        from .sensor import _device_temp_is_f
-        return _device_temp_is_f(self.hass, self._entry, self._device_id)
-
-    def _f_to_display(self, f: float) -> float:
-        if self._is_f():
-            return round(f, 1)
-        return round((f - 32) * 5 / 9, 1)
-
-    def _display_to_f(self, v: float) -> float:
-        if self._is_f():
-            return v
-        return round(v * 9 / 5 + 32, 1)
-
-    # ------------------------------------------------------------------
-    # HA properties
-    # ------------------------------------------------------------------
-    @property
-    def native_unit_of_measurement(self) -> str:
-        return UnitOfTemperature.FAHRENHEIT if self._is_f() else UnitOfTemperature.CELSIUS
-
-    @property
-    def native_min_value(self) -> float:
-        return self._f_to_display(self._min_f)
-
-    @property
-    def native_max_value(self) -> float:
-        return self._f_to_display(self._max_f)
-
-    @property
-    def native_value(self) -> float | None:
-        raw = self._get_state().get("fahrenheit")
-        if raw is None:
-            return None
-        try:
-            return self._f_to_display(float(raw))
-        except (TypeError, ValueError):
-            return None
-
-    async def async_set_native_value(self, value: float) -> None:
-        client = _bucket(self.hass, self._entry).get("client")
-        if client:
-            snap = _snapshot_for(self.hass, self._entry, self._device_id)
-            svc_dict = (snap.get("services") or {}).get(self._service_id) or {}
-            f_value = self._display_to_f(value)
-            await client.async_send_service_command(
-                device_id=self._device_id,
-                service=svc_dict,
-                command_type=CMD_TEMPERATURE_SET,
-                command_params={"fahrenheit": f_value},
-            )
         self.async_write_ha_state()
 
 

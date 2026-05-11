@@ -174,30 +174,32 @@ async def async_setup_entry(hass, entry, async_add_entities):
             # (Fresh Food: 34-42°F, Freezer: -6-5°F  →  select)
             # (Hot Water: 90-185°F, Oven: 150-500°F  →  number in number.py)
             if stype == TEMPERATURE_SERVICE and CMD_TEMPERATURE_SET in cmds:
-                min_f = cfg.get("fahrenheitMinimum") or cfg.get("fahrenheitMin")
-                max_f = cfg.get("fahrenheitMaximum") or cfg.get("fahrenheitMax")
-                if min_f is not None and max_f is not None and (float(max_f) - float(min_f)) <= 150:
-                    _sdev = svc.get("serviceDeviceType") or ""
-                    _base = cfg.get("label") or dom.split(".")[-1].replace("_", " ").title()
-                    _prefix = sdev_prefix(_sdev)
-                    label = f"{_prefix} {_base}".strip() if _prefix else _base
-                    # warm.auto temperature → 라벨 고정 + Warm 모드일 때만 활성화
-                    warm_mode_only = "warm.auto" in dom
-                    if warm_mode_only:
-                        label = "Keep Warm Temperature"
-                    # early.temperature (Early Alert threshold) → diagnostic, disabled by default
-                    _disabled_by_default = "early.temperature" in dom
-                    if _disabled_by_default:
-                        label = "Early Alert Temperature"
-                    entities.append(SmartHQTemperatureSetpointSelect(
-                        hass=hass, entry=entry, client=client,
-                        device_id=device_id, service_id=service_id,
-                        dev_name=dev_name, label=label,
-                        min_f=float(min_f), max_f=float(max_f),
-                        unique_id=make_unique_id(device_id, service_id, "temp_setpoint_select"),
-                        warm_mode_only=warm_mode_only,
-                        disabled_by_default=_disabled_by_default,
-                    ))
+                # All writable temperature services are exposed as select entities.
+                # The app UI always uses a stepped integer list (API min/max);
+                # a free-form number input is never shown regardless of range.
+                min_f = float(cfg.get("fahrenheitMinimum") or cfg.get("fahrenheitMin") or 32)
+                max_f = float(cfg.get("fahrenheitMaximum") or cfg.get("fahrenheitMax") or 500)
+                _sdev = svc.get("serviceDeviceType") or ""
+                _base = cfg.get("label") or dom.split(".")[-1].replace("_", " ").title()
+                _prefix = sdev_prefix(_sdev)
+                label = f"{_prefix} {_base}".strip() if _prefix else _base
+                # warm.auto temperature → fixed label + only active in Warm mode
+                warm_mode_only = "warm.auto" in dom
+                if warm_mode_only:
+                    label = "Keep Warm Temperature"
+                # early.temperature (Early Alert threshold) → diagnostic, disabled by default
+                _disabled_by_default = "early.temperature" in dom
+                if _disabled_by_default:
+                    label = "Early Alert Temperature"
+                entities.append(SmartHQTemperatureSetpointSelect(
+                    hass=hass, entry=entry, client=client,
+                    device_id=device_id, service_id=service_id,
+                    dev_name=dev_name, label=label,
+                    min_f=min_f, max_f=max_f,
+                    unique_id=make_unique_id(device_id, service_id, "temp_setpoint_select"),
+                    warm_mode_only=warm_mode_only,
+                    disabled_by_default=_disabled_by_default,
+                ))
 
             # ── standard mode select ────────────────────────────────────────
             elif stype == MODE_SERVICE and CMD_MODE_SET in cmds:
