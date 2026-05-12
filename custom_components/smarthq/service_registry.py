@@ -166,6 +166,9 @@ SWITCH_MODE_DOMAINS: frozenset[str] = BRIGHTNESS_DOMAINS | LOCK_DOMAINS
 # mode services that are display-only (read-only sensor, no select)
 READONLY_MODE_DOMAINS: frozenset[str] = frozenset({
     "cloud.smarthq.domain.icemaker",
+    # demandresponse is set by the utility grid program automatically;
+    # it is not user-controllable and does not appear in the SmartHQ app
+    "cloud.smarthq.domain.demandresponse",
 })
 
 # environmental.sensor domainType → HA SensorDeviceClass mapping
