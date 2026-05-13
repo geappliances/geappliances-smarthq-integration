@@ -142,6 +142,10 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 max_val = float(cfg.get("maximum", 100))
                 _sdev = svc.get("serviceDeviceType") or ""
                 _base = cfg.get("label") or dom.split(".")[-1].replace("_", " ").title()
+                # Special: early.time domain generates label "Time" which is ambiguous.
+                # Rename to "Early Alert Time" to match the app's notification setting.
+                if "early" in dom and "time" in dom:
+                    _base = "Early Alert Time"
                 _prefix = sdev_prefix(_sdev)
                 label = f"{_prefix} {_base}".strip() if _prefix else _base
                 ha_unit, _ = _integer_units_to_ha(int_units)
@@ -624,11 +628,7 @@ def _make_cooking_numbers(hass, entry, device_id: str, dev_name: str, services_l
     if has_probe_temp:
         pass  # Probe Target is now handled as SmartHQProbeTargetSelect in select.py
     if has_cook_time:
-        entities.append(SmartHQCookTimeNumber(
-            hass=hass, entry=entry, device_id=device_id, dev_name=dev_name,
-            unique_id=make_unique_id(device_id, device_id, "cook_time"),
-            has_probe=has_probe_temp,
-        ))
+        pass  # Cook Time is now handled as SmartHQCookTimeHoursSelect + MinutesSelect in select.py
     if has_smoke_level:
         pass  # Smoke Level is now handled as a select in select.py (SmartHQSmokeLevelSelect)
 
