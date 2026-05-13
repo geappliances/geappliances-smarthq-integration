@@ -150,37 +150,11 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 label = f"{_prefix} {_base}".strip() if _prefix else _base
                 ha_unit, _ = _integer_units_to_ha(int_units)
 
-                # ── cooking.warm.auto integer: special handling ─────────────
-                enabled_default = True
-                # Two integer services share this domain:
-                #   • device.smoker  (value=1440) → Auto Warm hold duration
-                #     Split into Hours (1-24) + Minutes (0-60) entities
-                #   • device.notice  (value=0)    → notification timer, always 0
-                #                                   → disable by default
-                if "warm.auto" in dom:
-                    if "device.notice" in _sdev:
-                        entities.append(SmartHQIntegerNumber(
-                            hass=hass, entry=entry,
-                            device_id=device_id, service_id=service_id,
-                            dev_name=dev_name, label=label,
-                            min_val=0.0, max_val=1440.0, unit=ha_unit,
-                            unique_id=make_unique_id(device_id, service_id, "int_number"),
-                            enabled_default=False,
-                        ))
-                    elif "device.smoker" in _sdev:
-                        entities.append(SmartHQAutoWarmHoursNumber(
-                            hass=hass, entry=entry,
-                            device_id=device_id, service_id=service_id,
-                            dev_name=dev_name,
-                            unique_id=make_unique_id(device_id, service_id, "auto_warm_hours"),
-                        ))
-                        entities.append(SmartHQAutoWarmMinutesNumber(
-                            hass=hass, entry=entry,
-                            device_id=device_id, service_id=service_id,
-                            dev_name=dev_name,
-                            unique_id=make_unique_id(device_id, service_id, "auto_warm_minutes"),
-                        ))
-                    continue  # skip the generic append below
+                # ── time-unit integers → handled as select entities in select.py ──
+                # Any writable integer measured in minutes or hours is exposed
+                # as a stepped select (or h+min pair) rather than a free number input.
+                if "minute" in int_units or "hour" in int_units:
+                    continue  # select.py handles these
 
                 entities.append(SmartHQIntegerNumber(
                     hass=hass, entry=entry,

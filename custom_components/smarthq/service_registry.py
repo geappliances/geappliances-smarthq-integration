@@ -338,7 +338,7 @@ SERVICE_MAPPING: dict[str, dict] = {
     },
     INTEGER_SERVICE: {
         "type": "standard",
-        "platform": ["sensor", "number"],
+        "platform": ["sensor", "number", "select"],
         "handler": "StandardInteger",
     },
     DOUBLE_SERVICE: {

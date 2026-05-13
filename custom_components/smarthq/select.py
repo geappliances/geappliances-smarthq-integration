@@ -233,6 +233,70 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     sdev=svc.get("serviceDeviceType") or "",
                 ))
 
+            # ── integer time selects ────────────────────────────────────────
+            # Any writable integer measured in hours or minutes → stepped select.
+            # warm.auto + device.smoker is pre-handled in the cooking_mode
+            # aggregation block below (AutoWarmHoursSelect + MinutesSelect).
+            elif stype == INTEGER_SERVICE and CMD_INTEGER_SET in cmds:
+                int_units = cfg.get("integerUnits") or ""
+                if "minute" not in int_units and "hour" not in int_units:
+                    continue  # non-time integers stay in number.py
+                # Skip warm.auto+smoker: handled by cooking-mode aggregation
+                if "warm.auto" in dom and "device.smoker" in (svc.get("serviceDeviceType") or ""):
+                    continue
+                _sdev = svc.get("serviceDeviceType") or ""
+                _base = cfg.get("label") or dom.split(".")[-1].replace("_", " ").title()
+                if "early" in dom and "time" in dom:
+                    _base = "Early Alert Time"
+                elif "warm.auto" in dom:
+                    _base = "Keep Warm Notification"
+                _prefix = sdev_prefix(_sdev)
+                label = f"{_prefix} {_base}".strip() if _prefix else _base
+                svc_min = int(cfg.get("minimum") or 0)
+                svc_max = int(cfg.get("maximum") or 60)
+                # disabled by default if not shown in the app
+                _dis = "early" in dom or "warm.auto" in dom
+                if "hour" in int_units:
+                    # Single hours-only select (e.g. warm.auto device.notice: 0–3 h)
+                    entities.append(SmartHQIntegerTimeSingleSelect(
+                        hass=hass, entry=entry, client=client,
+                        device_id=device_id, service_id=service_id,
+                        dev_name=dev_name, label=label,
+                        svc_min=svc_min, svc_max=svc_max,
+                        unit="h", step=1,
+                        unique_id=make_unique_id(device_id, service_id, "int_time_h"),
+                        disabled_by_default=_dis,
+                    ))
+                elif svc_max <= 60:
+                    # Single minutes-only select (range fits in one hour)
+                    entities.append(SmartHQIntegerTimeSingleSelect(
+                        hass=hass, entry=entry, client=client,
+                        device_id=device_id, service_id=service_id,
+                        dev_name=dev_name, label=label,
+                        svc_min=svc_min, svc_max=svc_max,
+                        unit="min", step=5,
+                        unique_id=make_unique_id(device_id, service_id, "int_time_min"),
+                        disabled_by_default=_dis,
+                    ))
+                else:
+                    # Hours + minutes pair (total minutes, range > 60 min)
+                    entities.append(SmartHQIntegerTimeSplitHoursSelect(
+                        hass=hass, entry=entry, client=client,
+                        device_id=device_id, service_id=service_id,
+                        dev_name=dev_name, label=f"{label} Hours",
+                        svc_min=svc_min, svc_max=svc_max,
+                        unique_id=make_unique_id(device_id, service_id, "int_time_split_h"),
+                        disabled_by_default=_dis,
+                    ))
+                    entities.append(SmartHQIntegerTimeSplitMinutesSelect(
+                        hass=hass, entry=entry, client=client,
+                        device_id=device_id, service_id=service_id,
+                        dev_name=dev_name, label=f"{label} Minutes",
+                        svc_min=svc_min, svc_max=svc_max,
+                        unique_id=make_unique_id(device_id, service_id, "int_time_split_min"),
+                        disabled_by_default=_dis,
+                    ))
+
             # ── cooking mode (collect for aggregation) ──────────────────────
             elif stype == COOKING_MODE_SERVICE:
                 cooking_mode_svcs.append(svc)
@@ -2779,3 +2843,211 @@ class SmartHQAutoWarmMinutesSelect(_SmartHQAutoWarmSelectBase):
         p["minutes"] = mins
         await self._send_total(hours * 60 + mins)
         _LOGGER.info("[WARM_TIME_MIN] %s min \u2192 total=%s min", mins, hours * 60 + mins)
+
+
+# ---------------------------------------------------------------------------
+# Generic integer time selects — for any writable INTEGER_SERVICE with
+# integerUnits = minutes or hours (Early Alert Time, Keep Warm Notification, …)
+# ---------------------------------------------------------------------------
+
+class _SmartHQIntegerTimeBase(SelectEntity):
+    """Base for integer-service time selects (reads/writes value directly)."""
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+
+    def __init__(self, hass, entry, client, device_id: str, service_id: str,
+                 dev_name: str, label: str, unique_id: str,
+                 disabled_by_default: bool = False) -> None:
+        self.hass = hass
+        self._entry = entry
+        self._client = client
+        self._device_id = device_id
+        self._service_id = service_id
+        self._attr_name = f"{dev_name} {label}"
+        self._attr_unique_id = unique_id
+        self._attr_entity_registry_enabled_default = not disabled_by_default
+
+    def _get_value(self) -> int | None:
+        """Return current integer value (WS snapshot → coordinator fallback)."""
+        snap = _snapshot_for(self.hass, self._entry, self._device_id)
+        ws_val = (snap.get("services") or {}).get(self._service_id, {}).get("value")
+        if ws_val is not None:
+            return int(ws_val)
+        bucket = _bucket(self.hass, self._entry)
+        coordinator = bucket.get("coordinator")
+        if coordinator and coordinator.data:
+            for svc in (coordinator.data.get(self._device_id, {}).get("item") or {}).get("services") or []:
+                if isinstance(svc, dict):
+                    if (svc.get("serviceId") or svc.get("id") or "") == self._service_id:
+                        v = (svc.get("state") or {}).get("value")
+                        return int(v) if v is not None else None
+        return None
+
+    async def _send_value(self, value: int) -> None:
+        if not self._client:
+            return
+        bucket = _bucket(self.hass, self._entry)
+        svc_dict: dict = {}
+        coordinator = bucket.get("coordinator")
+        if coordinator and coordinator.data:
+            for svc in (coordinator.data.get(self._device_id, {}).get("item") or {}).get("services") or []:
+                if isinstance(svc, dict):
+                    if (svc.get("serviceId") or svc.get("id") or "") == self._service_id:
+                        svc_dict = svc
+                        break
+        await self._client.async_send_service_command(
+            device_id=self._device_id,
+            service=svc_dict,
+            command_type=CMD_INTEGER_SET,
+            command_params={"value": value},
+        )
+        self.async_write_ha_state()
+
+    @property
+    def device_info(self):
+        return _device_info_for(self.hass, self._entry, self._device_id)
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_DEVICE_UPDATED.format(device_id=self._device_id),
+                self._signal_update,
+            )
+        )
+
+    @callback
+    def _signal_update(self) -> None:
+        self.async_write_ha_state()
+
+
+class SmartHQIntegerTimeSingleSelect(_SmartHQIntegerTimeBase):
+    """Single-unit time select: either hours-only or minutes-only.
+
+    Used when:
+      • integerUnits = hours  (e.g. warm.auto device.notice: 0-3 h)
+      • integerUnits = minutes AND maximum <= 60  (single-hour range)
+    """
+
+    def __init__(self, hass, entry, client, device_id, service_id,
+                 dev_name, label, svc_min: int, svc_max: int,
+                 unit: str, step: int, unique_id: str,
+                 disabled_by_default: bool = False) -> None:
+        super().__init__(hass, entry, client, device_id, service_id,
+                         dev_name, label, unique_id, disabled_by_default)
+        self._unit = unit  # "h" or "min"
+        self._step = step
+        self._svc_min = svc_min
+        self._svc_max = svc_max
+        # Build static options list from range
+        lo = (svc_min // step) * step
+        self._attr_options = [
+            f"{v} {unit}" for v in range(lo, svc_max + 1, step)
+        ]
+        self._attr_icon = "mdi:timer-outline" if unit == "h" else "mdi:timer-sand"
+
+    @property
+    def current_option(self) -> str | None:
+        val = self._get_value()
+        if val is None:
+            return None
+        rounded = (val // self._step) * self._step
+        rounded = max(self._svc_min, min(self._svc_max, rounded))
+        return f"{rounded} {self._unit}"
+
+    async def async_select_option(self, option: str) -> None:
+        val = int(option.split()[0])
+        val = max(self._svc_min, min(self._svc_max, val))
+        _LOGGER.info("[INT_TIME_SINGLE] %s %s → value=%s", val, self._unit, val)
+        await self._send_value(val)
+
+
+class SmartHQIntegerTimeSplitHoursSelect(_SmartHQIntegerTimeBase):
+    """Hours component of an h+min pair backed by a single minutes-integer service.
+
+    Used when integerUnits = minutes AND maximum > 60.
+    Cooperates with SmartHQIntegerTimeSplitMinutesSelect via
+    bucket["int_time_pending"][device_id][service_id].
+    """
+
+    _attr_icon = "mdi:timer-outline"
+
+    def __init__(self, hass, entry, client, device_id, service_id,
+                 dev_name, label, svc_min: int, svc_max: int,
+                 unique_id: str, disabled_by_default: bool = False) -> None:
+        super().__init__(hass, entry, client, device_id, service_id,
+                         dev_name, label, unique_id, disabled_by_default)
+        self._svc_min = svc_min
+        self._svc_max = svc_max
+        max_h = svc_max // 60
+        self._attr_options = [f"{h} h" for h in range(max_h + 1)]
+
+    def _pending_buf(self) -> dict:
+        bucket = _bucket(self.hass, self._entry)
+        return (bucket
+                .setdefault("int_time_pending", {})
+                .setdefault(self._device_id, {})
+                .setdefault(self._service_id, {}))
+
+    @property
+    def current_option(self) -> str | None:
+        p = self._pending_buf()
+        if "hours" in p:
+            return f"{p['hours']} h"
+        total = self._get_value()
+        if total is None:
+            return None
+        return f"{total // 60} h"
+
+    async def async_select_option(self, option: str) -> None:
+        hours = int(option.split()[0])
+        p = self._pending_buf()
+        mins = p["minutes"] if "minutes" in p else (self._get_value() or 0) % 60
+        p["hours"] = hours
+        total = max(self._svc_min, min(self._svc_max, hours * 60 + mins))
+        _LOGGER.info("[INT_TIME_H] %sh → total=%s min", hours, total)
+        await self._send_value(total)
+
+
+class SmartHQIntegerTimeSplitMinutesSelect(_SmartHQIntegerTimeBase):
+    """Minutes component of an h+min pair backed by a single minutes-integer service."""
+
+    _attr_icon = "mdi:timer-sand"
+    _OPTS: list[str] = [f"{m} min" for m in range(0, 60, 5)]
+
+    def __init__(self, hass, entry, client, device_id, service_id,
+                 dev_name, label, svc_min: int, svc_max: int,
+                 unique_id: str, disabled_by_default: bool = False) -> None:
+        super().__init__(hass, entry, client, device_id, service_id,
+                         dev_name, label, unique_id, disabled_by_default)
+        self._svc_min = svc_min
+        self._svc_max = svc_max
+        self._attr_options = self._OPTS
+
+    def _pending_buf(self) -> dict:
+        bucket = _bucket(self.hass, self._entry)
+        return (bucket
+                .setdefault("int_time_pending", {})
+                .setdefault(self._device_id, {})
+                .setdefault(self._service_id, {}))
+
+    @property
+    def current_option(self) -> str | None:
+        p = self._pending_buf()
+        if "minutes" in p:
+            return f"{(int(p['minutes']) // 5) * 5} min"
+        total = self._get_value()
+        if total is None:
+            return None
+        return f"{(total % 60 // 5) * 5} min"
+
+    async def async_select_option(self, option: str) -> None:
+        mins = int(option.split()[0])
+        p = self._pending_buf()
+        hours = p["hours"] if "hours" in p else (self._get_value() or 0) // 60
+        p["minutes"] = mins
+        total = max(self._svc_min, min(self._svc_max, hours * 60 + mins))
+        _LOGGER.info("[INT_TIME_MIN] %s min → total=%s min", mins, total)
+        await self._send_value(total)
+
