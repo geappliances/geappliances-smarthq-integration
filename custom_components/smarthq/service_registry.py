@@ -565,9 +565,14 @@ SERVICE_MAPPING: dict[str, dict] = {
         "platform": "sensor",
         "handler": "SmartHQLaundryState",
     },
+    # laundry.mode.v1 represents physical-panel cycle selection on the washer itself.
+    # The correct remote-control cycle entity is remotecycleselection.
+    # Exposing laundry.mode.v1 as a select causes unintended direct-mode writes that
+    # bypass Remote Start requirements and can cancel the remote-start arming on the panel.
+    # Blocked from select; retained only as a read-only sensor if needed.
     LAUNDRY_MODE_SERVICE: {
         "type": "custom",
-        "platform": "select",
+        "platform": "sensor",
         "handler": "SmartHQLaundryMode",
     },
     LAUNDRY_PRICEMENU_V1_SERVICE: {

@@ -1474,6 +1474,15 @@ class SmartHQWebsocket:
             cur_index.update(index)
             
             _LOGGER.debug("[SERVICE_UPDATE] %s: %d services updated", did[:8], len(svc_states))
+            # Log trigger service disabled state changes for Remote Start debugging
+            for sid, st in svc_states.items():
+                if st.get("serviceType") == "cloud.smarthq.service.trigger":
+                    _LOGGER.debug(
+                        "[TRIGGER_STATE] %s domain=%s disabled=%s",
+                        did[:8],
+                        st.get("domainType", "").split(".")[-1],
+                        st.get("disabled"),
+                    )
             async_dispatcher_send(self.hass, SIGNAL_DEVICE_UPDATED.format(device_id=did))
             return
 

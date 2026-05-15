@@ -273,16 +273,30 @@ class _SmartHQButtonBase(ButtonEntity):
         self._device_id = device_id
         self._attr_unique_id = unique_id
 
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to WS device updates so available/state re-evaluates."""
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_DEVICE_UPDATED.format(device_id=self._device_id),
+                self.async_write_ha_state,
+            )
+        )
+
     @property
     def device_info(self):
         return _device_info_for(self.hass, self._entry, self._device_id)
 
 
 class SmartHQTriggerButton(_SmartHQButtonBase):
-    """Button for a trigger service — sends trigger.do with no parameters."""
+    """Button for a trigger service — sends trigger.do with no parameters.
+
+    entity_category is intentionally NOT set (None) so that user-facing
+    triggers like 'Start' appear in the Controls section, not Diagnostics.
+    Factory/restore triggers are disabled by default via the registry flag.
+    """
 
     _attr_icon = "mdi:gesture-tap-button"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, hass, entry, client, device_id, service_id,
                  dev_name, label, svc, unique_id, disabled_by_default=False):
@@ -292,6 +306,74 @@ class SmartHQTriggerButton(_SmartHQButtonBase):
         self._svc = svc  # full service dict for async_send_service_command
         self._attr_name = f"{dev_name} {label}"
         self._attr_entity_registry_enabled_default = not disabled_by_default
+
+    def _device_presence(self) -> str:
+        """Return device presence status string (e.g. 'ONLINE', 'OFFLINE')."""
+        payload = _dev_payload(self.hass, self._entry, self._device_id)
+        pres = payload.get("presence") or {}
+        # The presence dict may use 'presence' or 'status' as the key
+        return str(pres.get("presence") or pres.get("status") or "UNKNOWN").upper()
+
+    @property
+    def available(self) -> bool:
+        """Mirror the GE SmartHQ app behaviour for trigger buttons.
+
+        For washer/dryer (devices that have a laundry.state.v1 service):
+          - Available ONLY when runStatus == "cloud.smarthq.type.runstatus.delayed"
+            (= Remote Start armed on panel + cycle queued for delayed/remote start).
+          - All other runStatus values (running, idle, paused…) → unavailable.
+          This exactly matches what the GE SmartHQ app shows.
+
+        For other devices (coffee brewer, dishwasher, etc.) that have no
+        laundry state service, fall back to the service-level ``disabled`` flag.
+        """
+        # 1. Device must be ONLINE (or unknown yet — optimistic)
+        status = self._device_presence()
+        if status not in ("ONLINE", "UNKNOWN"):
+            return False
+
+        snap = _snapshot_for(self.hass, self._entry, self._device_id)
+        services = snap.get("services") or {}
+        index = snap.get("index") or {}
+
+        # 2. Laundry device: use runStatus as the availability gate
+        #    - domain.start  → available only when runStatus == delayed
+        #    - domain.stop   → available only when runStatus == running
+        _LAUNDRY_STATE_STYPE = "cloud.smarthq.service.laundry.state.v1"
+        _LAUNDRY_DOM = "cloud.smarthq.domain.laundry"
+        laundry_sid = index.get((_LAUNDRY_STATE_STYPE, _LAUNDRY_DOM))
+        _LOGGER.debug(
+            "[TRIGGER_AVAIL] %s svc=%s index_keys=%s laundry_sid=%s",
+            self._device_id[:8], self._service_id[:8] if self._service_id else "?",
+            list(index.keys())[:5], laundry_sid,
+        )
+        if laundry_sid:
+            laundry_st = services.get(laundry_sid) or {}
+            run_status = laundry_st.get("runStatus", "")
+            svc_state = services.get(self._service_id) or {}
+            domain = svc_state.get("domainType", "")
+            _LOGGER.debug(
+                "[TRIGGER_AVAIL] run_status=%s domain=%s",
+                run_status, domain,
+            )
+            # runStatus values known to indicate machine is idle / not started:
+            _INACTIVE = {
+                "cloud.smarthq.type.runstatus.standby",
+                "cloud.smarthq.type.runstatus.idle",
+                "cloud.smarthq.type.runstatus.off",
+                "",
+            }
+            if domain.endswith(".stop"):
+                # Stop is available whenever the machine is NOT idle/standby/delayed
+                return run_status not in _INACTIVE and run_status != "cloud.smarthq.type.runstatus.delayed"
+            # Start: only when Remote Start is armed (delayed)
+            return run_status == "cloud.smarthq.type.runstatus.delayed"
+
+        # 3. Non-laundry devices: fall back to service-level disabled flag
+        svc_state = services.get(self._service_id) or {}
+        if not svc_state:
+            return True  # No snapshot yet — optimistic
+        return not svc_state.get("disabled", False)
 
     async def async_press(self) -> None:
         client = self._client or _bucket(self.hass, self._entry).get("client")
