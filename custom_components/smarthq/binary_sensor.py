@@ -41,9 +41,122 @@ from .service_registry import (
     COFFEEBREWER_V2_SERVICE,
     COMMON_ALERTS,
     make_unique_id,
+    get_service_mapping,
+    is_platform_mapped,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Data-driven standard binary sensor specs
+# ---------------------------------------------------------------------------
+# _BF: one entry per (state_key, uid_suffix) for SmartHQDishwasherFaultBinarySensor.
+# cls values:
+#   "F"  → SmartHQDishwasherFaultBinarySensor(label, key, dev_cls, uid)
+#   "R"  → SmartHQReminderBinarySensor(label, key, uid)
+#   "CB" → SmartHQCoffeeBrewerStatusBinarySensor(label, key, dev_cls, uid)
+from dataclasses import dataclass, field as dc_field
+
+@dataclass
+class _BF:
+    key: str
+    uid: str
+    label: str
+    dev_cls: Optional[BinarySensorDeviceClass]
+    cls: str = "F"   # "F", "R", "CB"
+
+
+_STANDARD_BINARY_SPECS: dict[str, list[_BF]] = {
+    DRYER_RACK_SERVICE: [
+        _BF("on",     "dryer_rack_on",  "Rack Dry",      BinarySensorDeviceClass.RUNNING),
+    ],
+    DESCALE_V1_SERVICE: [
+        _BF("needed", "descale_needed", "Descale Needed", BinarySensorDeviceClass.PROBLEM),
+    ],
+    DISHWASHER_STATE_SERVICE: [
+        _BF("criticalFaultActive",    "dw_critical_fault",    "Critical Fault",     BinarySensorDeviceClass.PROBLEM),
+        _BF("nonCriticalFaultActive", "dw_noncritical_fault", "Non-Critical Fault", BinarySensorDeviceClass.PROBLEM),
+    ],
+    COOKING_OVEN_PROBE_TEMP_SERVICE: [
+        _BF("probePresentUpperOven", "probe_upper_present", "Upper Probe Present", BinarySensorDeviceClass.CONNECTIVITY),
+        _BF("probePresentLowerOven", "probe_lower_present", "Lower Probe Present", BinarySensorDeviceClass.CONNECTIVITY),
+    ],
+    COOKING_ADVANTIUM_SERVICE: [
+        _BF("doorClosed",       "adv_door",         "Door",               BinarySensorDeviceClass.DOOR),
+        _BF("coolingFanActive", "adv_cooling_fan",  "Cooling Fan Active", BinarySensorDeviceClass.RUNNING),
+        _BF("sensingActive",    "adv_sensing",      "Sensing Active",     BinarySensorDeviceClass.RUNNING),
+    ],
+    PIZZAOVEN_STATE_SERVICE: [
+        _BF("domeState", "pzo_dome_open", "Dome Open", BinarySensorDeviceClass.OPENING),
+    ],
+    PIZZAOVEN_REMINDERS_SERVICE: [
+        _BF("pizzaRotateReminder",     "pzo_rem_rotate", "Rotate Reminder",      None, "R"),
+        _BF("pizzaFinalCheckReminder", "pzo_rem_final",  "Final Check Reminder", None, "R"),
+        _BF("pizzaDoneReminder",       "pzo_rem_done",   "Done Reminder",        None, "R"),
+    ],
+    DISH_CONFIG_V1_SERVICE: [
+        _BF("disabled", "dish_cfg_disabled", "Dish Config Disabled", BinarySensorDeviceClass.PROBLEM),
+    ],
+    DEMANDRESPONSE_EVENT_V1_SERVICE: [
+        _BF("disabled", "dr_event_disabled", "Demand Response Event Disabled", BinarySensorDeviceClass.PROBLEM),
+    ],
+    LAUNDRY_PRICEMENU_V1_SERVICE: [
+        _BF("disabled", "pricemenu_disabled", "Laundry Price Menu Disabled", BinarySensorDeviceClass.PROBLEM),
+    ],
+    REMOTECYCLESELECTION_SERVICE: [
+        _BF("disabled", "rcs_disabled", "Remote Cycle Selection Disabled", BinarySensorDeviceClass.PROBLEM),
+    ],
+    DISHDRAWER_STATE_LEGACY_SERVICE: [
+        _BF("canStart",     "ddr_can_start",     "Dishdrawer Can Start",    BinarySensorDeviceClass.RUNNING),
+        _BF("remoteEnable", "ddr_remote_enable", "Dishdrawer Remote Enable",BinarySensorDeviceClass.CONNECTIVITY),
+        _BF("disabled",     "ddr_disabled",      "Dishdrawer Disabled",     BinarySensorDeviceClass.PROBLEM),
+    ],
+    DISHWASHER_STATE_LEGACY_SERVICE: [
+        _BF("disabled",   "dws_lg_disabled",    "Dishwasher Disabled",    BinarySensorDeviceClass.PROBLEM),
+        _BF("bottleWash", "dws_lg_bottle_wash", "Dishwasher Bottle Wash", BinarySensorDeviceClass.RUNNING),
+        _BF("steam",      "dws_lg_steam",       "Dishwasher Steam",       BinarySensorDeviceClass.RUNNING),
+    ],
+    DISHWASHER_CUSTOM_CYCLE_SERVICE: [
+        _BF("disabled", "dw_custom_cycle_disabled", "Custom Cycle Disabled", BinarySensorDeviceClass.PROBLEM),
+    ],
+    COFFEEBREWER_V2_SERVICE: [
+        _BF("potPresent",      "coffee_pot_present",  "Pot Present",       BinarySensorDeviceClass.CONNECTIVITY, "CB"),
+        _BF("outOfWater",      "coffee_out_water",    "Out of Water",      BinarySensorDeviceClass.PROBLEM,      "CB"),
+        _BF("outOfBeans",      "coffee_out_beans",    "Out of Beans",      BinarySensorDeviceClass.PROBLEM,      "CB"),
+        _BF("cleanBrewBasket", "coffee_clean_basket", "Clean Brew Basket", BinarySensorDeviceClass.PROBLEM,      "CB"),
+    ],
+}
+
+
+def _build_standard_binary_sensors(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    device_id: str,
+    service_id: str,
+    stype: str,
+    created: set[str],
+) -> list[BinarySensorEntity]:
+    """Create binary sensor entities for a standard (data-driven) serviceType."""
+    result: list[BinarySensorEntity] = []
+    for f in _STANDARD_BINARY_SPECS.get(stype, []):
+        uid = make_unique_id(device_id, service_id, f.uid)
+        if uid in created:
+            continue
+        created.add(uid)
+        if f.cls == "R":
+            result.append(SmartHQReminderBinarySensor(
+                hass, entry, device_id, service_id, f.label, f.key, uid,
+            ))
+        elif f.cls == "CB":
+            result.append(SmartHQCoffeeBrewerStatusBinarySensor(
+                hass, entry, device_id, service_id, f.label, f.key, f.dev_cls, uid,
+            ))
+        else:  # "F"
+            result.append(SmartHQDishwasherFaultBinarySensor(
+                hass, entry, device_id, service_id, f.label, f.key, f.dev_cls, uid,
+            ))
+    return result
 
 
 def _bucket(hass: HomeAssistant, entry: ConfigEntry) -> Dict[str, Any]:
@@ -144,13 +257,17 @@ async def async_setup_entry(
                 stype = svc.get("serviceType") or ""
                 service_id = svc.get("id") or svc.get("serviceId") or ""
 
+                # ── Allowlist check ──
+                if get_service_mapping(stype) is None:
+                    _LOGGER.debug("[BINARY_SENSOR] Skipping unmapped serviceType=%s", stype)
+                    continue
+                if not is_platform_mapped(stype, "binary_sensor"):
+                    continue
+
                 if stype == FIRMWARE_SERVICE:
-                    uid = make_unique_id(device_id, service_id, "fw_update")
-                    if uid not in created:
-                        created.add(uid)
-                        coord_entities.append(
-                            SmartHQFirmwareUpdateBinarySensor(hass, entry, device_id, service_id, uid)
-                        )
+                    # Firmware update status is not exposed as a user-facing entity.
+                    _LOGGER.debug("[BINARY_SENSOR] Blocking firmware service for %s", device_id[:8])
+                    continue
 
                 elif stype == DOOR_SERVICE:
                     uid = make_unique_id(device_id, service_id, "door")
@@ -200,169 +317,8 @@ async def async_setup_entry(
                             SmartHQEnhancedFeatureBinarySensor(hass, entry, device_id, service_id, uid)
                         )
 
-                elif stype == DRYER_RACK_SERVICE:
-                    uid = make_unique_id(device_id, service_id, "dryer_rack_on")
-                    if uid not in created:
-                        created.add(uid)
-                        coord_entities.append(
-                            SmartHQDishwasherFaultBinarySensor(
-                                hass, entry, device_id, service_id,
-                                "Rack Dry", "on", BinarySensorDeviceClass.RUNNING, uid,
-                            )
-                        )
-
-                elif stype == DESCALE_V1_SERVICE:
-                    uid = make_unique_id(device_id, service_id, "descale_needed")
-                    if uid not in created:
-                        created.add(uid)
-                        coord_entities.append(
-                            SmartHQDishwasherFaultBinarySensor(
-                                hass, entry, device_id, service_id,
-                                "Descale Needed", "needed", BinarySensorDeviceClass.PROBLEM, uid,
-                            )
-                        )
-
-                elif stype == FLEXDISPENSE_SERVICE:
-                    uid = make_unique_id(device_id, service_id, "flexdispense_on")
-                    if uid not in created:
-                        created.add(uid)
-                        dom = svc.get("domainType") or ""
-                        label = dom.split(".")[-1].replace("_", " ").title() + " Flex Dispense Active"
-                        coord_entities.append(
-                            SmartHQDishwasherFaultBinarySensor(
-                                hass, entry, device_id, service_id,
-                                label, "on", BinarySensorDeviceClass.RUNNING, uid,
-                            )
-                        )
-
-                elif stype == DISHWASHER_STATE_SERVICE:
-                    for key, label, uid_sfx, dev_cls in [
-                        ("criticalFaultActive",    "Critical Fault",     "dw_critical_fault",    BinarySensorDeviceClass.PROBLEM),
-                        ("nonCriticalFaultActive", "Non-Critical Fault", "dw_noncritical_fault", BinarySensorDeviceClass.PROBLEM),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in created:
-                            created.add(uid)
-                            coord_entities.append(
-                                SmartHQDishwasherFaultBinarySensor(
-                                    hass, entry, device_id, service_id,
-                                    label, key, dev_cls, uid,
-                                )
-                            )
-
-                elif stype == COOKING_OVEN_PROBE_TEMP_SERVICE:
-                    for key, label, uid_sfx in [
-                        ("probePresentUpperOven", "Upper Probe Present", "probe_upper_present"),
-                        ("probePresentLowerOven", "Lower Probe Present", "probe_lower_present"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in created:
-                            created.add(uid)
-                            coord_entities.append(
-                                SmartHQDishwasherFaultBinarySensor(
-                                    hass, entry, device_id, service_id,
-                                    label, key, BinarySensorDeviceClass.CONNECTIVITY, uid,
-                                )
-                            )
-
-                elif stype == COOKING_ADVANTIUM_SERVICE:
-                    for key, label, uid_sfx, dev_cls in [
-                        ("doorClosed",      "Door",              "adv_door",         BinarySensorDeviceClass.DOOR),
-                        ("coolingFanActive","Cooling Fan Active","adv_cooling_fan",   BinarySensorDeviceClass.RUNNING),
-                        ("sensingActive",   "Sensing Active",   "adv_sensing",       BinarySensorDeviceClass.RUNNING),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in created:
-                            created.add(uid)
-                            coord_entities.append(
-                                SmartHQDishwasherFaultBinarySensor(
-                                    hass, entry, device_id, service_id,
-                                    label, key, dev_cls, uid,
-                                )
-                            )
-
-                elif stype == PIZZAOVEN_STATE_SERVICE:
-                    uid = make_unique_id(device_id, service_id, "pzo_dome_open")
-                    if uid not in created:
-                        created.add(uid)
-                        coord_entities.append(
-                            SmartHQDishwasherFaultBinarySensor(
-                                hass, entry, device_id, service_id,
-                                "Dome Open", "domeState", BinarySensorDeviceClass.OPENING, uid,
-                            )
-                        )
-
-                elif stype == PIZZAOVEN_REMINDERS_SERVICE:
-                    for key, label, uid_sfx in [
-                        ("pizzaRotateReminder",     "Rotate Reminder",      "pzo_rem_rotate"),
-                        ("pizzaFinalCheckReminder", "Final Check Reminder", "pzo_rem_final"),
-                        ("pizzaDoneReminder",       "Done Reminder",        "pzo_rem_done"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in created:
-                            created.add(uid)
-                            coord_entities.append(
-                                SmartHQReminderBinarySensor(
-                                    hass, entry, device_id, service_id,
-                                    label, key, uid,
-                                )
-                            )
-
-                elif stype == DISH_CONFIG_V1_SERVICE:
-                    # dish.config.v1 state: disabled (BOOLEAN)
-                    uid = make_unique_id(device_id, service_id, "dish_cfg_disabled")
-                    if uid not in created:
-                        created.add(uid)
-                        coord_entities.append(
-                            SmartHQDishwasherFaultBinarySensor(
-                                hass, entry, device_id, service_id,
-                                "Dish Config Disabled", "disabled",
-                                BinarySensorDeviceClass.PROBLEM, uid,
-                            )
-                        )
-
-                elif stype == DEMANDRESPONSE_EVENT_V1_SERVICE:
-                    # demandresponse.event.v1 state: disabled (BOOLEAN)
-                    uid = make_unique_id(device_id, service_id, "dr_event_disabled")
-                    if uid not in created:
-                        created.add(uid)
-                        coord_entities.append(
-                            SmartHQDishwasherFaultBinarySensor(
-                                hass, entry, device_id, service_id,
-                                "Demand Response Event Disabled", "disabled",
-                                BinarySensorDeviceClass.PROBLEM, uid,
-                            )
-                        )
-
-                elif stype == LAUNDRY_PRICEMENU_V1_SERVICE:
-                    # laundry.pricemenu.v1 state: disabled (BOOLEAN)
-                    uid = make_unique_id(device_id, service_id, "pricemenu_disabled")
-                    if uid not in created:
-                        created.add(uid)
-                        coord_entities.append(
-                            SmartHQDishwasherFaultBinarySensor(
-                                hass, entry, device_id, service_id,
-                                "Laundry Price Menu Disabled", "disabled",
-                                BinarySensorDeviceClass.PROBLEM, uid,
-                            )
-                        )
-
-                elif stype == REMOTECYCLESELECTION_SERVICE:
-                    # remotecycleselection state: disabled (BOOLEAN)
-                    uid = make_unique_id(device_id, service_id, "rcs_disabled")
-                    if uid not in created:
-                        created.add(uid)
-                        coord_entities.append(
-                            SmartHQDishwasherFaultBinarySensor(
-                                hass, entry, device_id, service_id,
-                                "Remote Cycle Selection Disabled", "disabled",
-                                BinarySensorDeviceClass.PROBLEM, uid,
-                            )
-                        )
-
                 elif stype == DISHDRAWER_MODE_LEGACY_SERVICE:
-                    # dishdrawer.mode.legacy state: disabled (BOOLEAN)
-                    # domainType = cycle type (e.g. dishwasher.pots)
+                    # domain-derived label — cannot use static spec table
                     dom = svc.get("domainType") or ""
                     cycle_label = dom.split(".")[-1].replace("_", " ").title() if dom else "Dishdrawer"
                     uid = make_unique_id(device_id, service_id, "dishdrawer_mode_disabled")
@@ -376,70 +332,24 @@ async def async_setup_entry(
                             )
                         )
 
-                elif stype == DISHDRAWER_STATE_LEGACY_SERVICE:
-                    # State: canStart (BOOLEAN), remoteEnable (BOOLEAN), disabled (BOOLEAN)
-                    for key, label, uid_sfx, dev_cls in [
-                        ("canStart",     "Dishdrawer Can Start",   "ddr_can_start",    BinarySensorDeviceClass.RUNNING),
-                        ("remoteEnable", "Dishdrawer Remote Enable","ddr_remote_enable",BinarySensorDeviceClass.CONNECTIVITY),
-                        ("disabled",     "Dishdrawer Disabled",    "ddr_disabled",     BinarySensorDeviceClass.PROBLEM),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in created:
-                            created.add(uid)
-                            coord_entities.append(
-                                SmartHQDishwasherFaultBinarySensor(
-                                    hass, entry, device_id, service_id,
-                                    label, key, dev_cls, uid,
-                                )
-                            )
-
-                elif stype == DISHWASHER_STATE_LEGACY_SERVICE:
-                    # State: disabled (BOOLEAN), bottleWash (BOOLEAN), steam (BOOLEAN)
-                    for key, label, uid_sfx, dev_cls in [
-                        ("disabled",   "Dishwasher Disabled",    "dws_lg_disabled",    BinarySensorDeviceClass.PROBLEM),
-                        ("bottleWash", "Dishwasher Bottle Wash", "dws_lg_bottle_wash", BinarySensorDeviceClass.RUNNING),
-                        ("steam",      "Dishwasher Steam",       "dws_lg_steam",       BinarySensorDeviceClass.RUNNING),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in created:
-                            created.add(uid)
-                            coord_entities.append(
-                                SmartHQDishwasherFaultBinarySensor(
-                                    hass, entry, device_id, service_id,
-                                    label, key, dev_cls, uid,
-                                )
-                            )
-
-                elif stype == DISHWASHER_CUSTOM_CYCLE_SERVICE:
-                    # State: disabled (BOOLEAN)
-                    uid = make_unique_id(device_id, service_id, "dw_custom_cycle_disabled")
+                elif stype == FLEXDISPENSE_SERVICE:
+                    dom = svc.get("domainType") or ""
+                    label = dom.split(".")[-1].replace("_", " ").title() + " Flex Dispense Active"
+                    uid = make_unique_id(device_id, service_id, "flexdispense_on")
                     if uid not in created:
                         created.add(uid)
                         coord_entities.append(
                             SmartHQDishwasherFaultBinarySensor(
                                 hass, entry, device_id, service_id,
-                                "Custom Cycle Disabled", "disabled",
-                                BinarySensorDeviceClass.PROBLEM, uid,
+                                label, "on", BinarySensorDeviceClass.RUNNING, uid,
                             )
                         )
 
-                elif stype == COFFEEBREWER_V2_SERVICE:
-                    # coffeebrewer.v2 status flags from state
-                    for key, label, uid_sfx, dev_cls in [
-                        ("potPresent",      "Pot Present",        "coffee_pot_present",   BinarySensorDeviceClass.CONNECTIVITY),
-                        ("outOfWater",      "Out of Water",       "coffee_out_water",     BinarySensorDeviceClass.PROBLEM),
-                        ("outOfBeans",      "Out of Beans",       "coffee_out_beans",     BinarySensorDeviceClass.PROBLEM),
-                        ("cleanBrewBasket", "Clean Brew Basket",  "coffee_clean_basket",  BinarySensorDeviceClass.PROBLEM),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in created:
-                            created.add(uid)
-                            coord_entities.append(
-                                SmartHQCoffeeBrewerStatusBinarySensor(
-                                    hass, entry, device_id, service_id,
-                                    label, key, dev_cls, uid,
-                                )
-                            )
+                # ── standard (data-driven) binary sensors ───────────────────
+                elif stype in _STANDARD_BINARY_SPECS:
+                    coord_entities.extend(_build_standard_binary_sensors(
+                        hass, entry, device_id, service_id, stype, created,
+                    ))
 
         if coord_entities:
             async_add_entities(coord_entities, update_before_add=True)

@@ -20,6 +20,8 @@ from .service_registry import (
     STRING_SERVICE,
     CMD_STRING_SET,
     make_unique_id,
+    get_service_mapping,
+    is_platform_mapped,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -97,6 +99,13 @@ async def async_setup_entry(
                 cfg = svc.get("config") or {}
                 dom = svc.get("domainType") or ""
                 cmds = svc.get("supportedCommands") or []
+
+                # ── Allowlist check ──
+                if get_service_mapping(stype) is None:
+                    _LOGGER.debug("[TEXT] Skipping unmapped serviceType=%s", stype)
+                    continue
+                if not is_platform_mapped(stype, "text"):
+                    continue
 
                 if stype != STRING_SERVICE:
                     continue

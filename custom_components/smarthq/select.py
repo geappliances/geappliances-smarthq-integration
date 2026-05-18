@@ -29,7 +29,9 @@ from .service_registry import (
     COFFEEBREWER_V2_SERVICE,
     LAUNDRY_MODE_SERVICE,
     TEMPERATURE_SERVICE,
+    INTEGER_SERVICE,
     CMD_TEMPERATURE_SET,
+    CMD_INTEGER_SET,
     DISHWASHER_MODE_V1_SERVICE,
     FLEXDISPENSE_SERVICE,
     STAINREMOVAL_SERVICE,
@@ -48,11 +50,39 @@ from .service_registry import (
     CMD_DISHWASHER_FAVORITES_V1_SET,
     SWITCH_MODE_DOMAINS,
     READONLY_MODE_DOMAINS,
+    COOKING_PARAM_SUPPORTED,
     make_unique_id,
     is_cooking_mode_domain,
+    get_service_mapping,
+    is_platform_mapped,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Data-driven generic mode select specs
+# (serviceType, required_command, label, uid_suffix)
+# All create SmartHQGenericModeSelect with the given command_type.
+# ---------------------------------------------------------------------------
+from dataclasses import dataclass as _dc
+
+@_dc
+class _GMS:
+    stype: str
+    cmd: str
+    label: str
+    uid: str
+
+
+_GENERIC_MODE_SELECT_SPECS: list[_GMS] = [
+    _GMS(FLEXDISPENSE_SERVICE,          CMD_FLEXDISPENSE_MODE_SET,    "",             "flexdispense_mode"),
+    _GMS(STAINREMOVAL_SERVICE,          CMD_STAINREMOVAL_MODE_SET,    "Stain Removal","stain_removal_mode"),
+    _GMS(REMOTECYCLESELECTION_SERVICE,  CMD_REMOTECYCLESELECTION_SET, "Remote Cycle", "remote_cycle_select"),
+    _GMS(DISHWASHER_CUSTOM_CYCLE_SERVICE, CMD_DISHWASHER_CUSTOM_CYCLE_SET, "Custom Cycle", "dw_custom_cycle"),
+]
+# label="" means: derive from domainType at runtime
+_GENERIC_MODE_SELECT_BY_STYPE: dict[str, _GMS] = {s.stype: s for s in _GENERIC_MODE_SELECT_SPECS}
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +154,21 @@ async def async_setup_entry(hass, entry, async_add_entities):
         # Track dishdrawer.mode.legacy services for aggregation
         dishdrawer_mode_legacy_svcs: List[dict] = []
 
+        # Pre-scan: find the Keep Warm (Auto Warm) integer service for this device.
+        # This is the integer service with domain cooking.warm.auto on device.smoker;
+        # it stores the total keep-warm duration in minutes.
+        warm_auto_svc: dict | None = next(
+            (
+                s for s in services_list
+                if isinstance(s, dict)
+                and s.get("serviceType") == INTEGER_SERVICE
+                and "warm.auto" in (s.get("domainType") or "")
+                and "device.smoker" in (s.get("serviceDeviceType") or "")
+                and CMD_INTEGER_SET in (s.get("supportedCommands") or [])
+            ),
+            None,
+        )
+
         for svc in services_list:
             if not isinstance(svc, dict):
                 continue
@@ -134,36 +179,45 @@ async def async_setup_entry(hass, entry, async_add_entities):
             cmds = svc.get("supportedCommands") or []
             cfg = svc.get("config") or {}
 
+            # ── Allowlist check ──
+            if get_service_mapping(stype) is None:
+                _LOGGER.debug("[SELECT] Skipping unmapped serviceType=%s", stype)
+                continue
+            if not is_platform_mapped(stype, "select"):
+                continue
+
             # ── temperature setpoint select (small integer range) ─────────────
             # When fahrenheitMaximum - fahrenheitMinimum <= 30, expose as a
             # stepped select instead of a free-form number input.
             # (Fresh Food: 34-42°F, Freezer: -6-5°F  →  select)
             # (Hot Water: 90-185°F, Oven: 150-500°F  →  number in number.py)
             if stype == TEMPERATURE_SERVICE and CMD_TEMPERATURE_SET in cmds:
-                min_f = cfg.get("fahrenheitMinimum") or cfg.get("fahrenheitMin")
-                max_f = cfg.get("fahrenheitMaximum") or cfg.get("fahrenheitMax")
-                if min_f is not None and max_f is not None and (float(max_f) - float(min_f)) <= 150:
-                    _sdev = svc.get("serviceDeviceType") or ""
-                    _base = cfg.get("label") or dom.split(".")[-1].replace("_", " ").title()
-                    _prefix = sdev_prefix(_sdev)
-                    label = f"{_prefix} {_base}".strip() if _prefix else _base
-                    # warm.auto temperature → 라벨 고정 + Warm 모드일 때만 활성화
-                    warm_mode_only = "warm.auto" in dom
-                    if warm_mode_only:
-                        label = "Keep Warm Temperature"
-                    # early.temperature (Early Alert threshold) → diagnostic, disabled by default
-                    _disabled_by_default = "early.temperature" in dom
-                    if _disabled_by_default:
-                        label = "Early Alert Temperature"
-                    entities.append(SmartHQTemperatureSetpointSelect(
-                        hass=hass, entry=entry, client=client,
-                        device_id=device_id, service_id=service_id,
-                        dev_name=dev_name, label=label,
-                        min_f=float(min_f), max_f=float(max_f),
-                        unique_id=make_unique_id(device_id, service_id, "temp_setpoint_select"),
-                        warm_mode_only=warm_mode_only,
-                        disabled_by_default=_disabled_by_default,
-                    ))
+                # All writable temperature services are exposed as select entities.
+                # The app UI always uses a stepped integer list (API min/max);
+                # a free-form number input is never shown regardless of range.
+                min_f = float(cfg.get("fahrenheitMinimum") or cfg.get("fahrenheitMin") or 32)
+                max_f = float(cfg.get("fahrenheitMaximum") or cfg.get("fahrenheitMax") or 500)
+                _sdev = svc.get("serviceDeviceType") or ""
+                _base = cfg.get("label") or dom.split(".")[-1].replace("_", " ").title()
+                _prefix = sdev_prefix(_sdev)
+                label = f"{_prefix} {_base}".strip() if _prefix else _base
+                # warm.auto temperature → fixed label + only active in Warm mode
+                warm_mode_only = "warm.auto" in dom
+                if warm_mode_only:
+                    label = "Keep Warm Temperature"
+                # early.temperature (Early Alert threshold) → diagnostic, disabled by default
+                _disabled_by_default = "early.temperature" in dom
+                if _disabled_by_default:
+                    label = "Early Alert Temperature"
+                entities.append(SmartHQTemperatureSetpointSelect(
+                    hass=hass, entry=entry, client=client,
+                    device_id=device_id, service_id=service_id,
+                    dev_name=dev_name, label=label,
+                    min_f=min_f, max_f=max_f,
+                    unique_id=make_unique_id(device_id, service_id, "temp_setpoint_select"),
+                    warm_mode_only=warm_mode_only,
+                    disabled_by_default=_disabled_by_default,
+                ))
 
             # ── standard mode select ────────────────────────────────────────
             elif stype == MODE_SERVICE and CMD_MODE_SET in cmds:
@@ -178,6 +232,70 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     unique_id=make_unique_id(device_id, service_id, "mode_select"),
                     sdev=svc.get("serviceDeviceType") or "",
                 ))
+
+            # ── integer time selects ────────────────────────────────────────
+            # Any writable integer measured in hours or minutes → stepped select.
+            # warm.auto + device.smoker is pre-handled in the cooking_mode
+            # aggregation block below (AutoWarmHoursSelect + MinutesSelect).
+            elif stype == INTEGER_SERVICE and CMD_INTEGER_SET in cmds:
+                int_units = cfg.get("integerUnits") or ""
+                if "minute" not in int_units and "hour" not in int_units:
+                    continue  # non-time integers stay in number.py
+                # Skip warm.auto+smoker: handled by cooking-mode aggregation
+                if "warm.auto" in dom and "device.smoker" in (svc.get("serviceDeviceType") or ""):
+                    continue
+                _sdev = svc.get("serviceDeviceType") or ""
+                _base = cfg.get("label") or dom.split(".")[-1].replace("_", " ").title()
+                if "early" in dom and "time" in dom:
+                    _base = "Early Alert Time"
+                elif "warm.auto" in dom:
+                    _base = "Keep Warm Notification"
+                _prefix = sdev_prefix(_sdev)
+                label = f"{_prefix} {_base}".strip() if _prefix else _base
+                svc_min = int(cfg.get("minimum") or 0)
+                svc_max = int(cfg.get("maximum") or 60)
+                # disabled by default if not shown in the app
+                _dis = "early" in dom or "warm.auto" in dom
+                if "hour" in int_units:
+                    # Single hours-only select (e.g. warm.auto device.notice: 0–3 h)
+                    entities.append(SmartHQIntegerTimeSingleSelect(
+                        hass=hass, entry=entry, client=client,
+                        device_id=device_id, service_id=service_id,
+                        dev_name=dev_name, label=label,
+                        svc_min=svc_min, svc_max=svc_max,
+                        unit="h", step=1,
+                        unique_id=make_unique_id(device_id, service_id, "int_time_h"),
+                        disabled_by_default=_dis,
+                    ))
+                elif svc_max <= 60:
+                    # Single minutes-only select (range fits in one hour)
+                    entities.append(SmartHQIntegerTimeSingleSelect(
+                        hass=hass, entry=entry, client=client,
+                        device_id=device_id, service_id=service_id,
+                        dev_name=dev_name, label=label,
+                        svc_min=svc_min, svc_max=svc_max,
+                        unit="min", step=5,
+                        unique_id=make_unique_id(device_id, service_id, "int_time_min"),
+                        disabled_by_default=_dis,
+                    ))
+                else:
+                    # Hours + minutes pair (total minutes, range > 60 min)
+                    entities.append(SmartHQIntegerTimeSplitHoursSelect(
+                        hass=hass, entry=entry, client=client,
+                        device_id=device_id, service_id=service_id,
+                        dev_name=dev_name, label=f"{label} Hours",
+                        svc_min=svc_min, svc_max=svc_max,
+                        unique_id=make_unique_id(device_id, service_id, "int_time_split_h"),
+                        disabled_by_default=_dis,
+                    ))
+                    entities.append(SmartHQIntegerTimeSplitMinutesSelect(
+                        hass=hass, entry=entry, client=client,
+                        device_id=device_id, service_id=service_id,
+                        dev_name=dev_name, label=f"{label} Minutes",
+                        svc_min=svc_min, svc_max=svc_max,
+                        unique_id=make_unique_id(device_id, service_id, "int_time_split_min"),
+                        disabled_by_default=_dis,
+                    ))
 
             # ── cooking mode (collect for aggregation) ──────────────────────
             elif stype == COOKING_MODE_SERVICE:
@@ -201,56 +319,9 @@ async def async_setup_entry(hass, entry, async_add_entities):
             elif stype == DISHWASHER_MODE_V1_SERVICE and CMD_DISHWASHER_MODE_SET in cmds:
                 dishwasher_mode_svcs.append(svc)
 
-            # ── flexdispense mode select ──────────────────────────────────────
-            elif stype == FLEXDISPENSE_SERVICE and CMD_FLEXDISPENSE_MODE_SET in cmds:
-                dom_label = dom.split(".")[-1].replace("_", " ").title() if dom else "Flex Dispense"
-                entities.append(SmartHQGenericModeSelect(
-                    hass=hass, entry=entry, client=client,
-                    device_id=device_id, service_id=service_id,
-                    dev_name=dev_name, label=f"{dom_label}",
-                    command_type=CMD_FLEXDISPENSE_MODE_SET,
-                    cfg=cfg,
-                    unique_id=make_unique_id(device_id, service_id, "flexdispense_mode"),
-                ))
-
-            # ── stainremoval mode select ──────────────────────────────────────
-            elif stype == STAINREMOVAL_SERVICE and CMD_STAINREMOVAL_MODE_SET in cmds:
-                entities.append(SmartHQGenericModeSelect(
-                    hass=hass, entry=entry, client=client,
-                    device_id=device_id, service_id=service_id,
-                    dev_name=dev_name, label="Stain Removal",
-                    command_type=CMD_STAINREMOVAL_MODE_SET,
-                    cfg=cfg,
-                    unique_id=make_unique_id(device_id, service_id, "stain_removal_mode"),
-                ))
-
-            # ── remote cycle selection select ─────────────────────────────────
-            elif stype == REMOTECYCLESELECTION_SERVICE and CMD_REMOTECYCLESELECTION_SET in cmds:
-                # config.supportedModes → list of LAUNDRY_CYCLE tokens
-                entities.append(SmartHQGenericModeSelect(
-                    hass=hass, entry=entry, client=client,
-                    device_id=device_id, service_id=service_id,
-                    dev_name=dev_name, label="Remote Cycle",
-                    command_type=CMD_REMOTECYCLESELECTION_SET,
-                    cfg=cfg,
-                    unique_id=make_unique_id(device_id, service_id, "remote_cycle_select"),
-                ))
-
             # ── dishdrawer.mode.legacy (collect for aggregation) ──────────────
             elif stype == DISHDRAWER_MODE_LEGACY_SERVICE and CMD_DISHDRAWER_MODE_LEGACY_SET in cmds:
                 dishdrawer_mode_legacy_svcs.append(svc)
-
-            # ── dishwasher.custom.cycle select ────────────────────────────────
-            elif stype == DISHWASHER_CUSTOM_CYCLE_SERVICE and CMD_DISHWASHER_CUSTOM_CYCLE_SET in cmds:
-                # config.supportedModes → list of DISHWASHER_MODE_DOMAIN tokens
-                entities.append(SmartHQGenericModeSelect(
-                    hass=hass, entry=entry, client=client,
-                    device_id=device_id, service_id=service_id,
-                    dev_name=dev_name, label="Custom Cycle",
-                    command_type=CMD_DISHWASHER_CUSTOM_CYCLE_SET,
-                    cfg=cfg,
-                    unique_id=make_unique_id(device_id, service_id, "dw_custom_cycle"),
-                ))
 
             # ── dishwasher.favorites.v1 select ────────────────────────────────
             elif stype == DISHWASHER_FAVORITES_V1_SERVICE and CMD_DISHWASHER_FAVORITES_V1_SET in cmds:
@@ -260,6 +331,20 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     dev_name=dev_name, cfg=cfg,
                     unique_id=make_unique_id(device_id, service_id, "dw_favorites"),
                 ))
+
+            # ── standard generic mode selects (data-driven) ───────────────────
+            elif stype in _GENERIC_MODE_SELECT_BY_STYPE:
+                spec = _GENERIC_MODE_SELECT_BY_STYPE[stype]
+                if spec.cmd in cmds:
+                    label = spec.label if spec.label else dom.split(".")[-1].replace("_", " ").title()
+                    entities.append(SmartHQGenericModeSelect(
+                        hass=hass, entry=entry, client=client,
+                        device_id=device_id, service_id=service_id,
+                        dev_name=dev_name, label=label,
+                        command_type=spec.cmd,
+                        cfg=cfg,
+                        unique_id=make_unique_id(device_id, service_id, spec.uid),
+                    ))
 
         # ── aggregate cooking.mode.v1 services → single cooking mode select ─
         if cooking_mode_svcs:
@@ -301,6 +386,58 @@ async def async_setup_entry(hass, entry, async_add_entities):
                         hass=hass, entry=entry,
                         device_id=device_id, dev_name=dev_name,
                         unique_id=make_unique_id(device_id, device_id, "cook_target_method"),
+                    ))
+
+                # ── Cooking Temp select (cavity temperature) ──────────────────
+                # Created for ANY cooking device that supports cavityTemperature
+                # (Smoker, Toaster Oven, Oven, etc.).
+                # ProbeTargetSelect is smoker-only (has_probe).
+                has_cavity_temp = any(
+                    (s.get("config") or {}).get("cavityTemperatureSupported")
+                    in ("cloud.smarthq.type.parameter.required",
+                        "cloud.smarthq.type.parameter.optional",
+                        "cloud.smarthq.type.parameter.defaulted")
+                    for s in food_svcs
+                )
+                if has_cavity_temp:
+                    _cavity_min_f = min(
+                        (float((s.get("config") or {}).get("cavityTemperatureFahrenheitMinimum", 100))
+                         for s in food_svcs
+                         if (s.get("config") or {}).get("cavityTemperatureFahrenheitMinimum")),
+                        default=100.0,
+                    )
+                    _cavity_max_f = max(
+                        (float((s.get("config") or {}).get("cavityTemperatureFahrenheitMaximum", 300))
+                         for s in food_svcs
+                         if (s.get("config") or {}).get("cavityTemperatureFahrenheitMaximum")),
+                        default=300.0,
+                    )
+                    entities.append(SmartHQSmokerTempSelect(
+                        hass=hass, entry=entry,
+                        device_id=device_id, dev_name=dev_name,
+                        unique_id=make_unique_id(device_id, device_id, "smoker_temp"),
+                        min_f=_cavity_min_f, max_f=_cavity_max_f,
+                        is_smoker=has_probe,
+                        cooking_svcs=food_svcs,
+                    ))
+                if has_probe:
+                    _probe_min_f = min(
+                        (float((s.get("config") or {}).get("probeTemperatureFahrenheitMinimum", 100))
+                         for s in food_svcs
+                         if (s.get("config") or {}).get("probeTemperatureFahrenheitMinimum")),
+                        default=100.0,
+                    )
+                    _probe_max_f = max(
+                        (float((s.get("config") or {}).get("probeTemperatureFahrenheitMaximum", 210))
+                         for s in food_svcs
+                         if (s.get("config") or {}).get("probeTemperatureFahrenheitMaximum")),
+                        default=210.0,
+                    )
+                    entities.append(SmartHQProbeTargetSelect(
+                        hass=hass, entry=entry,
+                        device_id=device_id, dev_name=dev_name,
+                        unique_id=make_unique_id(device_id, device_id, "probe_target"),
+                        min_f=_probe_min_f, max_f=_probe_max_f,
                     ))
 
                 # ── Mode-specific parameter selects ──────────────────────────
@@ -369,6 +506,47 @@ async def async_setup_entry(hass, entry, async_add_entities):
                         device_id=device_id, dev_name=dev_name,
                         cooking_svcs=food_svcs,
                         unique_id=make_unique_id(device_id, device_id, "smoke_level_select"),
+                    ))
+
+                # ── Cook Time Hours + Minutes selects ─────────────────────────
+                # Replaces SmartHQCookTimeNumber. Active only when Cook Target
+                # Method = Time Based (not probe-based).
+                has_cook_time = any(
+                    (s.get("config") or {}).get("cookTimeSupported") in COOKING_PARAM_SUPPORTED
+                    for s in food_svcs
+                )
+                if has_cook_time:
+                    entities.append(SmartHQCookTimeHoursSelect(
+                        hass=hass, entry=entry,
+                        device_id=device_id, dev_name=dev_name,
+                        cooking_svcs=food_svcs,
+                        unique_id=make_unique_id(device_id, device_id, "cook_time_h"),
+                    ))
+                    entities.append(SmartHQCookTimeMinutesSelect(
+                        hass=hass, entry=entry,
+                        device_id=device_id, dev_name=dev_name,
+                        cooking_svcs=food_svcs,
+                        unique_id=make_unique_id(device_id, device_id, "cook_time_min"),
+                    ))
+
+                # ── Keep Warm Time Hours + Minutes selects ────────────────────
+                # Replaces SmartHQAutoWarmHoursNumber + SmartHQAutoWarmMinutesNumber.
+                # Available only when Cook Mode = Warm.
+                if warm_auto_svc:
+                    warm_svc_id = warm_auto_svc.get("serviceId") or warm_auto_svc.get("id") or ""
+                    warm_cfg = warm_auto_svc.get("config") or {}
+                    warm_max_min = int(warm_cfg.get("maximum") or 1440)
+                    entities.append(SmartHQAutoWarmHoursSelect(
+                        hass=hass, entry=entry,
+                        device_id=device_id, service_id=warm_svc_id,
+                        dev_name=dev_name, max_minutes=warm_max_min,
+                        unique_id=make_unique_id(device_id, warm_svc_id, "auto_warm_h"),
+                    ))
+                    entities.append(SmartHQAutoWarmMinutesSelect(
+                        hass=hass, entry=entry,
+                        device_id=device_id, service_id=warm_svc_id,
+                        dev_name=dev_name,
+                        unique_id=make_unique_id(device_id, warm_svc_id, "auto_warm_min"),
                     ))
 
         # ── aggregate laundry.mode.v1 → one select per device ───────────────────────
@@ -1444,8 +1622,9 @@ _LAUNDRY_CYCLE_LABELS: Dict[str, str] = {
     "steamfresh": "Steam Fresh", "steamnormal": "Steam Normal",
     "steamrefresh": "Steam Refresh", "steamsanitize": "Steam Sanitize",
     "synthetics": "Synthetics", "timeddry": "Timed Dry", "towels": "Towels",
+    "towelssheets": "Towels & Sheets",
     "tubclean": "Tub Clean", "ultradelicate": "Ultra Delicate",
-    "warmwash": "Warm Wash", "whites": "Whites", "wool": "Wool",
+    "warmup": "Warm Up", "warmwash": "Warm Wash", "whites": "Whites", "wool": "Wool",
 }
 
 
@@ -2206,3 +2385,669 @@ class SmartHQCookTargetMethodSelect(SelectEntity):
     @callback
     def _signal_update(self) -> None:
         self.async_write_ha_state()
+
+
+class _SmartHQSmokerTempSelectBase(SelectEntity):
+    """Base class for Smoker temperature selects (Cavity Temp, Probe Target).
+
+    Options are generated from API fahrenheit min/max, displayed in the
+    device's temperature unit (°C or °F). Values are stored in
+    pending_cook_params and sent as a batch via Send To Smoker button.
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+
+    def __init__(self, hass, entry, device_id: str, dev_name: str, unique_id: str,
+                 min_f: float, max_f: float, cooking_svcs: list | None = None) -> None:
+        self.hass = hass
+        self._entry = entry
+        self._device_id = device_id
+        self._attr_unique_id = unique_id
+        self._min_f = min_f
+        self._max_f = max_f
+        self._cooking_svcs = cooking_svcs or []
+
+    def _pending(self) -> dict:
+        bucket = _bucket(self.hass, self._entry)
+        return bucket.setdefault("pending_cook_params", {}).setdefault(
+            self._device_id, {"is_probe_based": True}
+        )
+
+    def _current_mode_token(self) -> str | None:
+        bucket = _bucket(self.hass, self._entry)
+        return (bucket.get("pending_cook_modes") or {}).get(self._device_id, {}).get("mode_token")
+
+    def _mode_supports_cavity_temp(self) -> bool:
+        """Return True if the current pending cook mode supports cavity temperature."""
+        token = self._current_mode_token()
+        if token is None:
+            # No mode selected yet — show by default if any mode supports it
+            return bool(self._cooking_svcs)
+        for s in self._cooking_svcs:
+            if s.get("domainType") == token:
+                supported = (s.get("config") or {}).get("cavityTemperatureSupported")
+                return supported in (
+                    "cloud.smarthq.type.parameter.required",
+                    "cloud.smarthq.type.parameter.optional",
+                    "cloud.smarthq.type.parameter.defaulted",
+                )
+        return False
+
+    def _device_is_f(self) -> bool:
+        from .sensor import _device_temp_is_f
+        return _device_temp_is_f(self.hass, self._entry, self._device_id)
+
+    def _f_to_display(self, f: float) -> int:
+        if self._device_is_f():
+            return round(f)
+        return round((f - 32) * 5 / 9)
+
+    def _display_to_f(self, v: float) -> float:
+        if self._device_is_f():
+            return float(v)
+        return float(v) * 9 / 5 + 32
+
+    def _build_options(self) -> list:
+        lo = self._f_to_display(self._min_f)
+        hi = self._f_to_display(self._max_f)
+        unit = "\u00b0F" if self._device_is_f() else "\u00b0C"
+        return [f"{v}{unit}" for v in range(int(lo), int(hi) + 1)]
+
+    @property
+    def options(self) -> list:
+        return self._build_options()
+
+    @property
+    def available(self) -> bool:
+        snap = _snapshot_for(self.hass, self._entry, self._device_id)
+        return bool(snap)
+
+    @property
+    def device_info(self):
+        return _device_info_for(self.hass, self._entry, self._device_id)
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_DEVICE_UPDATED.format(device_id=self._device_id),
+                self._signal_update,
+            )
+        )
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_COOK_MODE_CHANGED.format(device_id=self._device_id),
+                self._signal_update,
+            )
+        )
+        self._signal_update()
+
+    @callback
+    def _signal_update(self) -> None:
+        self.async_write_ha_state()
+
+
+class SmartHQSmokerTempSelect(_SmartHQSmokerTempSelectBase):
+    """Cooking cavity temperature as a stepped select.
+
+    Used for Smoker ("Smoker Temp") and Toaster Oven/Oven ("Cook Temperature").
+    """
+
+    def __init__(self, hass, entry, device_id: str, dev_name: str, unique_id: str,
+                 min_f: float, max_f: float, is_smoker: bool = False,
+                 cooking_svcs: list | None = None) -> None:
+        super().__init__(hass, entry, device_id, dev_name, unique_id, min_f, max_f, cooking_svcs)
+        if is_smoker:
+            self._attr_name = f"{dev_name} Smoker Temp"
+            self._attr_icon = "mdi:thermometer"
+        else:
+            self._attr_name = f"{dev_name} Cook Temperature"
+            self._attr_icon = "mdi:thermometer"
+
+    @property
+    def current_option(self):
+        p = self._pending()
+        if "smoker_temp_f" in p:
+            v = self._f_to_display(float(p["smoker_temp_f"]))
+        else:
+            snap = _snapshot_for(self.hass, self._entry, self._device_id)
+            for st in (snap.get("services") or {}).values():
+                if isinstance(st, dict) and "cavityFahrenheit" in st:
+                    v = self._f_to_display(float(st["cavityFahrenheit"]))
+                    break
+            else:
+                return None
+        unit = "\u00b0F" if self._device_is_f() else "\u00b0C"
+        return f"{int(v)}{unit}"
+
+    async def async_select_option(self, option: str) -> None:
+        val = float(option.replace("\u00b0F", "").replace("\u00b0C", "").strip())
+        f_val = int(self._display_to_f(val))
+        self._pending()["smoker_temp_f"] = f_val
+        _LOGGER.info("[SMOKER_TEMP_SELECT] Set to %s\u00b0F (display: %s)", f_val, option)
+        self.async_write_ha_state()
+
+
+class SmartHQProbeTargetSelect(_SmartHQSmokerTempSelectBase):
+    """Probe target temperature as a stepped select.
+
+    Only available when Cook Target Method = Probe Temp.
+    """
+
+    def __init__(self, hass, entry, device_id: str, dev_name: str, unique_id: str,
+                 min_f: float, max_f: float) -> None:
+        super().__init__(hass, entry, device_id, dev_name, unique_id, min_f, max_f)
+        self._attr_name = f"{dev_name} Probe Target"
+        self._attr_icon = "mdi:thermometer-probe"
+
+    @property
+    def available(self) -> bool:
+        snap = _snapshot_for(self.hass, self._entry, self._device_id)
+        if not snap:
+            return False
+        return self._pending().get("is_probe_based", True)
+
+    @property
+    def current_option(self):
+        p = self._pending()
+        if "probe_target_f" in p:
+            v = self._f_to_display(float(p["probe_target_f"]))
+        else:
+            snap = _snapshot_for(self.hass, self._entry, self._device_id)
+            for st in (snap.get("services") or {}).values():
+                if isinstance(st, dict) and "probeFahrenheit" in st:
+                    v = self._f_to_display(float(st["probeFahrenheit"]))
+                    break
+            else:
+                return None
+        unit = "\u00b0F" if self._device_is_f() else "\u00b0C"
+        return f"{int(v)}{unit}"
+
+
+    async def async_select_option(self, option: str) -> None:
+        val = float(option.replace("\u00b0F", "").replace("\u00b0C", "").strip())
+        f_val = int(self._display_to_f(val))
+        self._pending()["probe_target_f"] = f_val
+        _LOGGER.info("[PROBE_TARGET_SELECT] Set to %s\u00b0F (display: %s)", f_val, option)
+        self.async_write_ha_state()
+
+
+# ---------------------------------------------------------------------------
+# Cook Time selects  (replaces SmartHQCookTimeNumber)
+# Stored in pending_cook_params["cook_time_min"] as total minutes.
+# ---------------------------------------------------------------------------
+
+class SmartHQCookTimeHoursSelect(_SmartHQCookParamSelectBase):
+    """Cook Time \u2014 hours component (0 h \u2026 max_hours h).
+
+    Active only when Cook Target Method = Time Based (not probe-based).
+    """
+
+    _attr_icon = "mdi:timer-outline"
+
+    def __init__(self, hass, entry, device_id, dev_name, cooking_svcs, unique_id):
+        super().__init__(hass, entry, device_id, dev_name, cooking_svcs, unique_id)
+        self._attr_name = f"{dev_name} Cook Time Hours"
+        self._attr_options = [f"{h} h" for h in range(17)]
+
+    @property
+    def available(self) -> bool:
+        if self._pending_params().get("is_probe_based", True):
+            return False
+        svc = self._svc_for_pending()
+        if svc:
+            return (svc.get("config") or {}).get("cookTimeSupported") in COOKING_PARAM_SUPPORTED
+        return any(
+            (s.get("config") or {}).get("cookTimeSupported") in COOKING_PARAM_SUPPORTED
+            for s in self._cooking_svcs
+        )
+
+    @property
+    def options(self) -> list[str]:
+        svc = self._svc_for_pending()
+        cfg = (svc.get("config") or {}) if svc else {}
+        max_s = int(cfg.get("cookTimeMaximum") or 57600)
+        max_h = max(1, max_s // 3600)
+        return [f"{h} h" for h in range(max_h + 1)]
+
+    @property
+    def current_option(self) -> str | None:
+        total_min = self._pending_params().get("cook_time_min")
+        if total_min is None:
+            return None
+        return f"{int(total_min) // 60} h"
+
+    async def async_select_option(self, option: str) -> None:
+        hours = int(option.split()[0])
+        p = self._pending_params()
+        mins = int(p.get("cook_time_min", 0)) % 60
+        p["cook_time_min"] = hours * 60 + mins
+        _LOGGER.info("[COOK_TIME_H] %sh \u2192 total=%s min", hours, hours * 60 + mins)
+        self.schedule_update_ha_state()
+
+
+class SmartHQCookTimeMinutesSelect(_SmartHQCookParamSelectBase):
+    """Cook Time \u2014 minutes component (0 min \u2026 55 min, 5-minute steps).
+
+    Active only when Cook Target Method = Time Based (not probe-based).
+    """
+
+    _attr_icon = "mdi:timer-sand"
+    _MINUTE_OPTS: list[str] = [f"{m} min" for m in range(0, 60, 5)]
+
+    def __init__(self, hass, entry, device_id, dev_name, cooking_svcs, unique_id):
+        super().__init__(hass, entry, device_id, dev_name, cooking_svcs, unique_id)
+        self._attr_name = f"{dev_name} Cook Time Minutes"
+        self._attr_options = self._MINUTE_OPTS
+
+    @property
+    def available(self) -> bool:
+        if self._pending_params().get("is_probe_based", True):
+            return False
+        svc = self._svc_for_pending()
+        if svc:
+            return (svc.get("config") or {}).get("cookTimeSupported") in COOKING_PARAM_SUPPORTED
+        return any(
+            (s.get("config") or {}).get("cookTimeSupported") in COOKING_PARAM_SUPPORTED
+            for s in self._cooking_svcs
+        )
+
+    @property
+    def current_option(self) -> str | None:
+        total_min = self._pending_params().get("cook_time_min")
+        if total_min is None:
+            return None
+        rounded = (int(total_min) % 60 // 5) * 5
+        return f"{rounded} min"
+
+    async def async_select_option(self, option: str) -> None:
+        mins = int(option.split()[0])
+        p = self._pending_params()
+        hours = int(p.get("cook_time_min", 0)) // 60
+        p["cook_time_min"] = hours * 60 + mins
+        _LOGGER.info("[COOK_TIME_MIN] %s min \u2192 total=%s min", mins, hours * 60 + mins)
+        self.schedule_update_ha_state()
+
+
+# ---------------------------------------------------------------------------
+# Auto Warm Duration selects  (replaces SmartHQAutoWarmHoursNumber + MinutesNumber)
+# Reads/writes the integer service (cooking.warm.auto, device.smoker) directly.
+# ---------------------------------------------------------------------------
+
+class _SmartHQAutoWarmSelectBase(SelectEntity):
+    """Base for Keep Warm Time hour/minute selects."""
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+
+    def __init__(self, hass, entry, device_id: str, service_id: str,
+                 dev_name: str, unique_id: str) -> None:
+        self.hass = hass
+        self._entry = entry
+        self._device_id = device_id
+        self._service_id = service_id
+        self._attr_unique_id = unique_id
+
+    def _get_total_minutes(self) -> int | None:
+        snap = _snapshot_for(self.hass, self._entry, self._device_id)
+        ws_val = (snap.get("services") or {}).get(self._service_id, {}).get("value")
+        if ws_val is not None:
+            return int(ws_val)
+        bucket = _bucket(self.hass, self._entry)
+        coordinator = bucket.get("coordinator")
+        if coordinator and coordinator.data:
+            for svc in (coordinator.data.get(self._device_id, {}).get("item") or {}).get("services") or []:
+                if isinstance(svc, dict):
+                    if (svc.get("serviceId") or svc.get("id") or "") == self._service_id:
+                        v = (svc.get("state") or {}).get("value")
+                        return int(v) if v is not None else None
+        return None
+
+    def _pending_buf(self) -> dict:
+        bucket = _bucket(self.hass, self._entry)
+        return bucket.setdefault("auto_warm_pending", {}).setdefault(self._device_id, {})
+
+    def _is_warm_cook_mode(self) -> bool:
+        bucket = _bucket(self.hass, self._entry)
+        token = (bucket.get("pending_cook_modes") or {}).get(self._device_id, {}).get("mode_token") or ""
+        if token:
+            return "cooking.warm" in token
+        coordinator = bucket.get("coordinator")
+        if coordinator and coordinator.data:
+            for svc in (coordinator.data.get(self._device_id, {}).get("item") or {}).get("services") or []:
+                if not isinstance(svc, dict):
+                    continue
+                if "cooking.state" not in (svc.get("serviceType") or ""):
+                    continue
+                sid = svc.get("serviceId") or svc.get("id") or ""
+                snap = _snapshot_for(self.hass, self._entry, self._device_id)
+                mode = (
+                    (snap.get("services") or {}).get(sid, {}).get("mode")
+                    or (svc.get("state") or {}).get("mode")
+                    or ""
+                )
+                if mode:
+                    return "cooking.warm" in mode
+        return False
+
+    @property
+    def available(self) -> bool:
+        return self._is_warm_cook_mode()
+
+    @property
+    def device_info(self):
+        return _device_info_for(self.hass, self._entry, self._device_id)
+
+    async def _send_total(self, total_minutes: int) -> None:
+        bucket = _bucket(self.hass, self._entry)
+        client = bucket.get("client")
+        if not client:
+            return
+        svc_dict: dict = {}
+        coordinator = bucket.get("coordinator")
+        if coordinator and coordinator.data:
+            for svc in (coordinator.data.get(self._device_id, {}).get("item") or {}).get("services") or []:
+                if isinstance(svc, dict):
+                    if (svc.get("serviceId") or svc.get("id") or "") == self._service_id:
+                        svc_dict = svc
+                        break
+        await client.async_send_service_command(
+            device_id=self._device_id,
+            service=svc_dict,
+            command_type=CMD_INTEGER_SET,
+            command_params={"value": total_minutes},
+        )
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_DEVICE_UPDATED.format(device_id=self._device_id),
+                self._signal_update,
+            )
+        )
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_COOK_MODE_CHANGED.format(device_id=self._device_id),
+                self._signal_update,
+            )
+        )
+
+    @callback
+    def _signal_update(self) -> None:
+        self.async_write_ha_state()
+
+
+class SmartHQAutoWarmHoursSelect(_SmartHQAutoWarmSelectBase):
+    """Keep Warm Time \u2014 hours component (0 h \u2026 max_hours h)."""
+
+    _attr_icon = "mdi:timer-outline"
+
+    def __init__(self, hass, entry, device_id: str, service_id: str,
+                 dev_name: str, max_minutes: int, unique_id: str) -> None:
+        super().__init__(hass, entry, device_id, service_id, dev_name, unique_id)
+        self._attr_name = f"{dev_name} Keep Warm Time Hours"
+        max_h = max(1, max_minutes // 60)
+        self._attr_options = [f"{h} h" for h in range(max_h + 1)]
+
+    @property
+    def current_option(self) -> str | None:
+        p = self._pending_buf()
+        if "hours" in p:
+            return f"{p['hours']} h"
+        total = self._get_total_minutes()
+        if total is None:
+            return None
+        return f"{max(0, total // 60)} h"
+
+    async def async_select_option(self, option: str) -> None:
+        hours = int(option.split()[0])
+        p = self._pending_buf()
+        mins = p["minutes"] if "minutes" in p else (self._get_total_minutes() or 0) % 60
+        p["hours"] = hours
+        await self._send_total(hours * 60 + mins)
+        _LOGGER.info("[WARM_TIME_H] %sh \u2192 total=%s min", hours, hours * 60 + mins)
+
+
+class SmartHQAutoWarmMinutesSelect(_SmartHQAutoWarmSelectBase):
+    """Keep Warm Time \u2014 minutes component (0 min \u2026 55 min, 5-minute steps)."""
+
+    _attr_icon = "mdi:timer-sand"
+    _OPTS: list[str] = [f"{m} min" for m in range(0, 60, 5)]
+
+    def __init__(self, hass, entry, device_id: str, service_id: str,
+                 dev_name: str, unique_id: str) -> None:
+        super().__init__(hass, entry, device_id, service_id, dev_name, unique_id)
+        self._attr_name = f"{dev_name} Keep Warm Time Minutes"
+        self._attr_options = self._OPTS
+
+    @property
+    def current_option(self) -> str | None:
+        p = self._pending_buf()
+        raw = p.get("minutes")
+        if raw is not None:
+            return f"{(int(raw) // 5) * 5} min"
+        total = self._get_total_minutes()
+        if total is None:
+            return None
+        return f"{(total % 60 // 5) * 5} min"
+
+    async def async_select_option(self, option: str) -> None:
+        mins = int(option.split()[0])
+        p = self._pending_buf()
+        hours = p["hours"] if "hours" in p else max(0, (self._get_total_minutes() or 0) // 60)
+        p["minutes"] = mins
+        await self._send_total(hours * 60 + mins)
+        _LOGGER.info("[WARM_TIME_MIN] %s min \u2192 total=%s min", mins, hours * 60 + mins)
+
+
+# ---------------------------------------------------------------------------
+# Generic integer time selects — for any writable INTEGER_SERVICE with
+# integerUnits = minutes or hours (Early Alert Time, Keep Warm Notification, …)
+# ---------------------------------------------------------------------------
+
+class _SmartHQIntegerTimeBase(SelectEntity):
+    """Base for integer-service time selects (reads/writes value directly)."""
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+
+    def __init__(self, hass, entry, client, device_id: str, service_id: str,
+                 dev_name: str, label: str, unique_id: str,
+                 disabled_by_default: bool = False) -> None:
+        self.hass = hass
+        self._entry = entry
+        self._client = client
+        self._device_id = device_id
+        self._service_id = service_id
+        self._attr_name = f"{dev_name} {label}"
+        self._attr_unique_id = unique_id
+        self._attr_entity_registry_enabled_default = not disabled_by_default
+
+    def _get_value(self) -> int | None:
+        """Return current integer value (WS snapshot → coordinator fallback)."""
+        snap = _snapshot_for(self.hass, self._entry, self._device_id)
+        ws_val = (snap.get("services") or {}).get(self._service_id, {}).get("value")
+        if ws_val is not None:
+            return int(ws_val)
+        bucket = _bucket(self.hass, self._entry)
+        coordinator = bucket.get("coordinator")
+        if coordinator and coordinator.data:
+            for svc in (coordinator.data.get(self._device_id, {}).get("item") or {}).get("services") or []:
+                if isinstance(svc, dict):
+                    if (svc.get("serviceId") or svc.get("id") or "") == self._service_id:
+                        v = (svc.get("state") or {}).get("value")
+                        return int(v) if v is not None else None
+        return None
+
+    async def _send_value(self, value: int) -> None:
+        if not self._client:
+            return
+        bucket = _bucket(self.hass, self._entry)
+        svc_dict: dict = {}
+        coordinator = bucket.get("coordinator")
+        if coordinator and coordinator.data:
+            for svc in (coordinator.data.get(self._device_id, {}).get("item") or {}).get("services") or []:
+                if isinstance(svc, dict):
+                    if (svc.get("serviceId") or svc.get("id") or "") == self._service_id:
+                        svc_dict = svc
+                        break
+        await self._client.async_send_service_command(
+            device_id=self._device_id,
+            service=svc_dict,
+            command_type=CMD_INTEGER_SET,
+            command_params={"value": value},
+        )
+        self.async_write_ha_state()
+
+    @property
+    def device_info(self):
+        return _device_info_for(self.hass, self._entry, self._device_id)
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_DEVICE_UPDATED.format(device_id=self._device_id),
+                self._signal_update,
+            )
+        )
+
+    @callback
+    def _signal_update(self) -> None:
+        self.async_write_ha_state()
+
+
+class SmartHQIntegerTimeSingleSelect(_SmartHQIntegerTimeBase):
+    """Single-unit time select: either hours-only or minutes-only.
+
+    Used when:
+      • integerUnits = hours  (e.g. warm.auto device.notice: 0-3 h)
+      • integerUnits = minutes AND maximum <= 60  (single-hour range)
+    """
+
+    def __init__(self, hass, entry, client, device_id, service_id,
+                 dev_name, label, svc_min: int, svc_max: int,
+                 unit: str, step: int, unique_id: str,
+                 disabled_by_default: bool = False) -> None:
+        super().__init__(hass, entry, client, device_id, service_id,
+                         dev_name, label, unique_id, disabled_by_default)
+        self._unit = unit  # "h" or "min"
+        self._step = step
+        self._svc_min = svc_min
+        self._svc_max = svc_max
+        # Build static options list from range
+        lo = (svc_min // step) * step
+        self._attr_options = [
+            f"{v} {unit}" for v in range(lo, svc_max + 1, step)
+        ]
+        self._attr_icon = "mdi:timer-outline" if unit == "h" else "mdi:timer-sand"
+
+    @property
+    def current_option(self) -> str | None:
+        val = self._get_value()
+        if val is None:
+            return None
+        rounded = (val // self._step) * self._step
+        rounded = max(self._svc_min, min(self._svc_max, rounded))
+        return f"{rounded} {self._unit}"
+
+    async def async_select_option(self, option: str) -> None:
+        val = int(option.split()[0])
+        val = max(self._svc_min, min(self._svc_max, val))
+        _LOGGER.info("[INT_TIME_SINGLE] %s %s → value=%s", val, self._unit, val)
+        await self._send_value(val)
+
+
+class SmartHQIntegerTimeSplitHoursSelect(_SmartHQIntegerTimeBase):
+    """Hours component of an h+min pair backed by a single minutes-integer service.
+
+    Used when integerUnits = minutes AND maximum > 60.
+    Cooperates with SmartHQIntegerTimeSplitMinutesSelect via
+    bucket["int_time_pending"][device_id][service_id].
+    """
+
+    _attr_icon = "mdi:timer-outline"
+
+    def __init__(self, hass, entry, client, device_id, service_id,
+                 dev_name, label, svc_min: int, svc_max: int,
+                 unique_id: str, disabled_by_default: bool = False) -> None:
+        super().__init__(hass, entry, client, device_id, service_id,
+                         dev_name, label, unique_id, disabled_by_default)
+        self._svc_min = svc_min
+        self._svc_max = svc_max
+        max_h = svc_max // 60
+        self._attr_options = [f"{h} h" for h in range(max_h + 1)]
+
+    def _pending_buf(self) -> dict:
+        bucket = _bucket(self.hass, self._entry)
+        return (bucket
+                .setdefault("int_time_pending", {})
+                .setdefault(self._device_id, {})
+                .setdefault(self._service_id, {}))
+
+    @property
+    def current_option(self) -> str | None:
+        p = self._pending_buf()
+        if "hours" in p:
+            return f"{p['hours']} h"
+        total = self._get_value()
+        if total is None:
+            return None
+        return f"{total // 60} h"
+
+    async def async_select_option(self, option: str) -> None:
+        hours = int(option.split()[0])
+        p = self._pending_buf()
+        mins = p["minutes"] if "minutes" in p else (self._get_value() or 0) % 60
+        p["hours"] = hours
+        total = max(self._svc_min, min(self._svc_max, hours * 60 + mins))
+        _LOGGER.info("[INT_TIME_H] %sh → total=%s min", hours, total)
+        await self._send_value(total)
+
+
+class SmartHQIntegerTimeSplitMinutesSelect(_SmartHQIntegerTimeBase):
+    """Minutes component of an h+min pair backed by a single minutes-integer service."""
+
+    _attr_icon = "mdi:timer-sand"
+    _OPTS: list[str] = [f"{m} min" for m in range(0, 60, 5)]
+
+    def __init__(self, hass, entry, client, device_id, service_id,
+                 dev_name, label, svc_min: int, svc_max: int,
+                 unique_id: str, disabled_by_default: bool = False) -> None:
+        super().__init__(hass, entry, client, device_id, service_id,
+                         dev_name, label, unique_id, disabled_by_default)
+        self._svc_min = svc_min
+        self._svc_max = svc_max
+        self._attr_options = self._OPTS
+
+    def _pending_buf(self) -> dict:
+        bucket = _bucket(self.hass, self._entry)
+        return (bucket
+                .setdefault("int_time_pending", {})
+                .setdefault(self._device_id, {})
+                .setdefault(self._service_id, {}))
+
+    @property
+    def current_option(self) -> str | None:
+        p = self._pending_buf()
+        if "minutes" in p:
+            return f"{(int(p['minutes']) // 5) * 5} min"
+        total = self._get_value()
+        if total is None:
+            return None
+        return f"{(total % 60 // 5) * 5} min"
+
+    async def async_select_option(self, option: str) -> None:
+        mins = int(option.split()[0])
+        p = self._pending_buf()
+        hours = p["hours"] if "hours" in p else (self._get_value() or 0) // 60
+        p["minutes"] = mins
+        total = max(self._svc_min, min(self._svc_max, hours * 60 + mins))
+        _LOGGER.info("[INT_TIME_MIN] %s min → total=%s min", mins, total)
+        await self._send_value(total)
+

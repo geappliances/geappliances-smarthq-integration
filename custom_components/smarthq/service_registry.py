@@ -166,6 +166,9 @@ SWITCH_MODE_DOMAINS: frozenset[str] = BRIGHTNESS_DOMAINS | LOCK_DOMAINS
 # mode services that are display-only (read-only sensor, no select)
 READONLY_MODE_DOMAINS: frozenset[str] = frozenset({
     "cloud.smarthq.domain.icemaker",
+    # demandresponse is set by the utility grid program automatically;
+    # it is not user-controllable and does not appear in the SmartHQ app
+    "cloud.smarthq.domain.demandresponse",
 })
 
 # environmental.sensor domainType → HA SensorDeviceClass mapping
@@ -263,6 +266,453 @@ def make_unique_id(device_id: str, service_id: str, suffix: str) -> str:
     Format: {device_id}_{service_id}_{suffix}
     """
     return f"{device_id}_{service_id}_{suffix}"
+
+
+# ---------------------------------------------------------------------------
+# SERVICE_MAPPING: Allowlist of all supported serviceTypes
+#
+# Each entry defines how a serviceType maps to HA platform(s).
+#   type:     "standard" → handled by a shared generic handler
+#             "custom"   → handled by dedicated hand-written entity class(es)
+#   platform: HA platform string or list of strings
+#   handler:  class name (string reference) used by the platform setup logic
+#   params:   optional extra kwargs passed to the handler (e.g. device_class)
+#
+# serviceTypes NOT in this dict are silently ignored (never exposed to HA).
+# This prevents accidental exposure of private/unsupported services such as
+# factory_reset, assistant, autoreorder, etc.
+# ---------------------------------------------------------------------------
+
+SERVICE_MAPPING: dict[str, dict] = {
+    # ------------------------------------------------------------------
+    # STANDARD mappings — generic handlers, no custom entity class needed
+    # ------------------------------------------------------------------
+
+    # switch
+    TOGGLE_SERVICE: {
+        "type": "standard",
+        "platform": "switch",
+        "handler": "StandardToggleSwitch",
+    },
+    LAUNDRY_TOGGLE_V2_SERVICE: {
+        "type": "standard",
+        "platform": "switch",
+        "handler": "StandardLaundryToggleV2Switch",
+    },
+
+    # binary_sensor
+    DOOR_SERVICE: {
+        "type": "standard",
+        "platform": "binary_sensor",
+        "handler": "StandardDoorBinarySensor",
+        "params": {"device_class": "door"},
+    },
+    FILTER_SERVICE: {
+        "type": "standard",
+        "platform": "binary_sensor",
+        "handler": "StandardFilterBinarySensor",
+        "params": {"device_class": "problem"},
+    },
+    CONNECT_SERVICE: {
+        "type": "standard",
+        "platform": "binary_sensor",
+        "handler": "StandardConnectBinarySensor",
+        "params": {"device_class": "connectivity"},
+    },
+    ENHANCEDFEATURE_SERVICE: {
+        "type": "standard",
+        "platform": "binary_sensor",
+        "handler": "StandardEnhancedFeatureBinarySensor",
+    },
+    DRYER_RACK_SERVICE: {
+        "type": "standard",
+        "platform": "binary_sensor",
+        "handler": "StandardDryerRackBinarySensor",
+    },
+
+    # sensor (read-only)
+    TEMPERATURE_SERVICE: {
+        "type": "standard",
+        "platform": ["sensor", "select"],
+        "handler": "StandardTemperature",
+    },
+    INTEGER_SERVICE: {
+        "type": "standard",
+        "platform": ["sensor", "number", "select"],
+        "handler": "StandardInteger",
+    },
+    DOUBLE_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardDoubleSensor",
+    },
+    STRING_SERVICE: {
+        "type": "standard",
+        "platform": ["sensor", "text"],
+        "handler": "StandardString",
+    },
+    METER_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardMeterSensor",
+    },
+    BATTERY_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardBatterySensor",
+    },
+    CYCLETIMER_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardCycleTimerSensor",
+    },
+    STOPWATCH_SERVICE: {
+        "type": "standard",
+        "platform": ["sensor", "binary_sensor"],
+        "handler": "StandardStopwatch",
+    },
+    ENVIRONMENTAL_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardEnvironmentalSensor",
+    },
+    DELAYWINDOW_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardDelayWindowSensor",
+    },
+    POWER_USAGE_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardPowerUsageSensor",
+    },
+    VOLUME_LIQUID_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardVolumeLiquidSensor",
+    },
+    SCALE_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardScaleSensor",
+    },
+    OUTDOORUNIT_INFO_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardOutdoorUnitInfoSensor",
+    },
+    SMARTDISPENSE_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardSmartDispenseSensor",
+    },
+    DRYER_VENT_HEALTH_MODE_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardDryerVentHealthSensor",
+    },
+    LAUNDRY_BULKTANK_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardLaundryBulkTankSensor",
+    },
+    LAUNDRY_PETHAIR_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardLaundryPetHairSensor",
+    },
+    DISHWASHER_RINSE_AGENT_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardDishwasherRinseAgentSensor",
+    },
+    COOKTOP_CLOSEDLOOP_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardCooktopClosedLoopSensor",
+    },
+    COOKTOP_SOUSVIDE_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardCooktopSousVideSensor",
+    },
+    DRYER_CONFIG_CYCLE_V1_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardDryerConfigCycleSensor",
+    },
+    DRYER_MYCYCLE_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardDryerMyCycleSensor",
+    },
+    WASHER_CONFIG_CYCLE_V1_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardWasherConfigCycleSensor",
+    },
+    WASHER_MYCYCLE_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardWasherMyCycleSensor",
+    },
+    DEMANDRESPONSE_STATE_V1_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardDemandResponseStateSensor",
+    },
+    OVEN_MENUTREE_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardOvenMenuTreeSensor",
+    },
+    LAUNDRY_COMMERCIAL_V1_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardLaundryCommercialSensor",
+    },
+    LAUNDRY_DOWNLOADABLECYCLE_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardLaundryDownloadableCycleSensor",
+    },
+    ESPRESSOMAKER_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardEspressoMakerSensor",
+    },
+    SOURDOUGHSTARTER_SERVICE: {
+        "type": "standard",
+        "platform": "sensor",
+        "handler": "StandardSourdoughStarterSensor",
+    },
+
+    # select
+    MODE_SERVICE: {
+        "type": "standard",
+        "platform": ["select", "switch"],
+        "handler": "StandardMode",
+    },
+    STAINREMOVAL_SERVICE: {
+        "type": "standard",
+        "platform": "select",
+        "handler": "StandardStainRemovalSelect",
+    },
+    FLEXDISPENSE_SERVICE: {
+        "type": "standard",
+        "platform": ["select", "binary_sensor"],
+        "handler": "StandardFlexDispense",
+    },
+
+    # button
+    TRIGGER_SERVICE: {
+        "type": "standard",
+        "platform": "button",
+        "handler": "StandardTriggerButton",
+    },
+
+    # ------------------------------------------------------------------
+    # CUSTOM mappings — dedicated hand-written entity classes
+    # ------------------------------------------------------------------
+
+    # FIRMWARE_SERVICE is intentionally excluded (blocked):
+    # Firmware update is a sensitive operation that should not be exposed
+    # as a general HA entity. Kept here as a comment for documentation.
+    # FIRMWARE_SERVICE → blocked
+
+    COOKING_MODE_SERVICE: {
+        "type": "custom",
+        "platform": ["sensor", "select", "button", "number"],
+        "handler": "SmartHQCookingMode",
+    },
+    COOKING_STATE_SERVICE: {
+        "type": "custom",
+        "platform": ["sensor", "button"],
+        "handler": "SmartHQCookingState",
+    },
+    COOKING_OVEN_PROBE_TEMP_SERVICE: {
+        "type": "custom",
+        "platform": ["sensor", "binary_sensor"],
+        "handler": "SmartHQCookingOvenProbeTemp",
+    },
+    COOKING_BURNER_STATUS_SERVICE: {
+        "type": "custom",
+        "platform": "sensor",
+        "handler": "SmartHQCookingBurnerStatus",
+    },
+    COOKING_ADVANTIUM_SERVICE: {
+        "type": "custom",
+        "platform": ["sensor", "binary_sensor", "button"],
+        "handler": "SmartHQCookingAdventium",
+    },
+    BREW_MODE_SERVICE: {
+        "type": "custom",
+        "platform": ["sensor", "button"],
+        "handler": "SmartHQBrewMode",
+    },
+    COFFEEBREWER_V1_SERVICE: {
+        "type": "custom",
+        "platform": ["button", "select", "binary_sensor"],
+        "handler": "SmartHQCoffeeBrewerV1",
+    },
+    COFFEEBREWER_V2_SERVICE: {
+        "type": "custom",
+        "platform": ["button", "select", "binary_sensor"],
+        "handler": "SmartHQCoffeeBrewerV2",
+    },
+    LAUNDRY_STATE_SERVICE: {
+        "type": "custom",
+        "platform": "sensor",
+        "handler": "SmartHQLaundryState",
+    },
+    # laundry.mode.v1 represents physical-panel cycle selection on the washer itself.
+    # The correct remote-control cycle entity is remotecycleselection.
+    # Exposing laundry.mode.v1 as a select causes unintended direct-mode writes that
+    # bypass Remote Start requirements and can cancel the remote-start arming on the panel.
+    # Blocked from select; retained only as a read-only sensor if needed.
+    LAUNDRY_MODE_SERVICE: {
+        "type": "custom",
+        "platform": "sensor",
+        "handler": "SmartHQLaundryMode",
+    },
+    LAUNDRY_PRICEMENU_V1_SERVICE: {
+        "type": "custom",
+        "platform": ["sensor", "binary_sensor"],
+        "handler": "SmartHQLaundryPriceMenu",
+    },
+    DISHWASHER_STATE_V1_SERVICE: {
+        "type": "custom",
+        "platform": ["sensor", "button"],
+        "handler": "SmartHQDishwasherStateV1",
+    },
+    DISHWASHER_STATE_SERVICE: {
+        "type": "custom",
+        "platform": "binary_sensor",
+        "handler": "SmartHQDishwasherState",
+    },
+    DISHWASHER_MODE_V1_SERVICE: {
+        "type": "custom",
+        "platform": "select",
+        "handler": "SmartHQDishwasherModeV1",
+    },
+    DISHWASHER_CUSTOM_CYCLE_SERVICE: {
+        "type": "custom",
+        "platform": ["select", "binary_sensor"],
+        "handler": "SmartHQDishwasherCustomCycle",
+    },
+    DISHWASHER_FAVORITES_V1_SERVICE: {
+        "type": "custom",
+        "platform": "select",
+        "handler": "SmartHQDishwasherFavoritesV1",
+    },
+    DESCALE_V1_SERVICE: {
+        "type": "custom",
+        "platform": ["sensor", "binary_sensor"],
+        "handler": "SmartHQDescaleV1",
+    },
+    DISH_CONFIG_V1_SERVICE: {
+        "type": "custom",
+        "platform": "binary_sensor",
+        "handler": "SmartHQDishConfigV1",
+    },
+    DISHDRAWER_MODE_LEGACY_SERVICE: {
+        "type": "custom",
+        "platform": ["select", "binary_sensor", "number"],
+        "handler": "SmartHQDishDrawerModeLegacy",
+    },
+    DISHDRAWER_STATE_LEGACY_SERVICE: {
+        "type": "custom",
+        "platform": ["sensor", "binary_sensor", "button"],
+        "handler": "SmartHQDishDrawerStateLegacy",
+    },
+    DISHWASHER_STATE_LEGACY_SERVICE: {
+        "type": "custom",
+        "platform": ["sensor", "binary_sensor"],
+        "handler": "SmartHQDishwasherStateLegacy",
+    },
+    REMOTECYCLESELECTION_SERVICE: {
+        "type": "custom",
+        "platform": ["binary_sensor", "select"],
+        "handler": "SmartHQRemoteCycleSelection",
+    },
+    DEMANDRESPONSE_EVENT_V1_SERVICE: {
+        "type": "custom",
+        "platform": ["sensor", "binary_sensor"],
+        "handler": "SmartHQDemandResponseEvent",
+    },
+    PIZZAOVEN_STATE_SERVICE: {
+        "type": "custom",
+        "platform": ["sensor", "binary_sensor"],
+        "handler": "SmartHQPizzaOvenState",
+    },
+    PIZZAOVEN_REMINDERS_SERVICE: {
+        "type": "custom",
+        "platform": "binary_sensor",
+        "handler": "SmartHQPizzaOvenReminders",
+    },
+    MIXER_SERVICE: {
+        "type": "custom",
+        "platform": ["sensor", "button"],
+        "handler": "SmartHQMixer",
+    },
+    OVEN_FLEXTIMER_SERVICE: {
+        "type": "custom",
+        "platform": "sensor",
+        "handler": "SmartHQOvenFlexTimer",
+    },
+    COLOR_SERVICE: {
+        "type": "custom",
+        "platform": "light",
+        "handler": "SmartHQColorLight",
+    },
+    COOKING_PRORANGE_ACCENT_LIGHT_SERVICE: {
+        "type": "custom",
+        "platform": "light",
+        "handler": "SmartHQAccentLight",
+    },
+    THERMOSTAT_SERVICE: {
+        "type": "custom",
+        "platform": "climate",
+        "handler": "SmartHQThermostatClimate",
+    },
+    WATERHEATER_SERVICE: {
+        "type": "custom",
+        "platform": "water_heater",
+        "handler": "SmartHQWaterHeater",
+    },
+}
+
+
+def get_service_mapping(service_type: str) -> dict | None:
+    """Return the SERVICE_MAPPING entry for a serviceType, or None if not mapped.
+
+    serviceTypes not in SERVICE_MAPPING are silently ignored — never exposed to HA.
+    """
+    return SERVICE_MAPPING.get(service_type)
+
+
+def is_platform_mapped(service_type: str, platform: str) -> bool:
+    """Return True if the given serviceType is mapped to the specified HA platform."""
+    mapping = get_service_mapping(service_type)
+    if mapping is None:
+        return False
+    platforms = mapping["platform"]
+    if isinstance(platforms, list):
+        return platform in platforms
+    return platforms == platform
+
+
+def get_mapped_service_types(platform: str) -> list[str]:
+    """Return all serviceTypes that are mapped to the given HA platform."""
+    result = []
+    for svc_type, mapping in SERVICE_MAPPING.items():
+        platforms = mapping["platform"]
+        if isinstance(platforms, list):
+            if platform in platforms:
+                result.append(svc_type)
+        elif platforms == platform:
+            result.append(svc_type)
+    return result
 
 
 def is_cooking_mode_domain(domain: str) -> bool:

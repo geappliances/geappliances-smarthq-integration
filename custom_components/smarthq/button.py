@@ -50,9 +50,51 @@ from .service_registry import (
     CMD_MIXER_CANCEL,
     CMD_MIXER_PAUSE,
     make_unique_id,
+    get_service_mapping,
+    is_platform_mapped,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Data-driven WS button specs
+# Each entry maps a serviceType → list of (label, cmd, uid_sfx, icon) buttons.
+# cls "DW"  → SmartHQDishwasherStateButton(ws, label, cmd, uid)
+# cls "ADV" → SmartHQAdvantiumButton(ws, label, cmd, icon, uid)
+# label_prefix is prepended to each button label (e.g. "Dishdrawer ").
+# ---------------------------------------------------------------------------
+from dataclasses import dataclass as _dc, field as _field
+
+@_dc
+class _WBSpec:
+    buttons: list   # list of (label, cmd, uid_sfx, icon)
+    cls: str        # "DW" or "ADV"
+    label_prefix: str = ""
+
+
+_WS_BUTTON_SPECS: dict[str, _WBSpec] = {
+    DISHWASHER_STATE_V1_SERVICE: _WBSpec(cls="DW", buttons=[
+        ("Start", CMD_DISHWASHER_STATE_START, "dw_start",  ""),
+        ("Stop",  CMD_DISHWASHER_STATE_STOP,  "dw_stop",   ""),
+        ("Pause", CMD_DISHWASHER_STATE_PAUSE, "dw_pause",  ""),
+    ]),
+    DISHDRAWER_STATE_LEGACY_SERVICE: _WBSpec(cls="DW", label_prefix="Dishdrawer ", buttons=[
+        ("Start", CMD_DISHDRAWER_STATE_LEGACY_START, "ddr_start", ""),
+        ("Stop",  CMD_DISHDRAWER_STATE_LEGACY_STOP,  "ddr_stop",  ""),
+        ("Pause", CMD_DISHDRAWER_STATE_LEGACY_PAUSE, "ddr_pause", ""),
+    ]),
+    COOKING_ADVANTIUM_SERVICE: _WBSpec(cls="ADV", buttons=[
+        ("Start",  CMD_ADVANTIUM_START,  "adv_start",  "mdi:play"),
+        ("Stop",   CMD_ADVANTIUM_STOP,   "adv_stop",   "mdi:stop"),
+        ("Pause",  CMD_ADVANTIUM_PAUSE,  "adv_pause",  "mdi:pause"),
+        ("Resume", CMD_ADVANTIUM_RESUME, "adv_resume", "mdi:play-pause"),
+    ]),
+    MIXER_SERVICE: _WBSpec(cls="ADV", buttons=[
+        ("Cancel", CMD_MIXER_CANCEL, "mixer_cancel", "mdi:stop"),
+        ("Pause",  CMD_MIXER_PAUSE,  "mixer_pause",  "mdi:pause"),
+    ]),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -125,30 +167,37 @@ async def async_setup_entry(hass, entry, async_add_entities):
             service_id = svc.get("id") or svc.get("serviceId") or ""
             cmds = svc.get("supportedCommands") or []
 
+            # ── Allowlist check ──
+            if get_service_mapping(stype) is None:
+                _LOGGER.debug("[BUTTON] Skipping unmapped serviceType=%s", stype)
+                continue
+            if not is_platform_mapped(stype, "button"):
+                continue
+
             # ── trigger → button ────────────────────────────────────
             if stype == TRIGGER_SERVICE:
                 label = dom.split(".")[-1].replace("_", " ").title() if dom else "Trigger"
-                # Factory reset and restore-defaults are diagnostic/dangerous;
-                # disable by default so they don't appear in the main UI.
-                _disabled_by_default = any(
+                # Factory reset and restore-defaults are dangerous operations
+                # that should never be exposed in HA UI. Block entirely.
+                _is_dangerous = any(
                     kw in dom for kw in ("factory", "restore")
                 )
+                if _is_dangerous:
+                    _LOGGER.debug("[BUTTON] Blocking dangerous trigger domain=%s", dom)
+                    continue
                 entities.append(SmartHQTriggerButton(
                     hass=hass, entry=entry, client=client,
                     device_id=device_id, service_id=service_id,
                     dev_name=dev_name, label=label, svc=svc,
-                    disabled_by_default=_disabled_by_default,
                     unique_id=make_unique_id(device_id, service_id, "trigger"),
                 ))
 
             # ── firmware upgrade → button ───────────────────────────────────
-            elif stype == FIRMWARE_SERVICE and CMD_FIRMWARE_UPGRADE in cmds:
-                entities.append(SmartHQFirmwareUpgradeButton(
-                    hass=hass, entry=entry, client=client,
-                    device_id=device_id, service_id=service_id,
-                    dev_name=dev_name,
-                    unique_id=make_unique_id(device_id, service_id, "fw_upgrade"),
-                ))
+            # Firmware upgrades are managed via the HA update entity or the
+            # SmartHQ app; exposing a raw trigger button is unsafe and confusing.
+            elif stype == FIRMWARE_SERVICE:
+                _LOGGER.debug("[BUTTON] Blocking firmware trigger for %s", device_id[:8])
+                continue
 
             # ── coffee brewer start/stop ────────────────────────────────────
             elif stype in (COFFEEBREWER_V1_SERVICE, COFFEEBREWER_V2_SERVICE):
@@ -171,77 +220,30 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     if "cooking.food." in dom:
                         has_probe_mode = True
 
-            # ── dishwasher.state.v1 → start/stop/pause buttons ────────────────
-            elif stype == DISHWASHER_STATE_V1_SERVICE:
+            # ── dishwasher/dishdrawer/advantium/mixer WS buttons (data-driven) ──
+            elif stype in _WS_BUTTON_SPECS:
                 ws = bucket.get("client") or bucket.get("ws")
                 if ws:
-                    for btn_label, cmd_type, uid_sfx in [
-                        ("Start",  CMD_DISHWASHER_STATE_START, "dw_start"),
-                        ("Stop",   CMD_DISHWASHER_STATE_STOP,  "dw_stop"),
-                        ("Pause",  CMD_DISHWASHER_STATE_PAUSE, "dw_pause"),
-                    ]:
+                    spec = _WS_BUTTON_SPECS[stype]
+                    for btn_label, cmd_type, uid_sfx, icon in spec.buttons:
                         if cmd_type in cmds:
-                            entities.append(SmartHQDishwasherStateButton(
-                                hass=hass, entry=entry, ws=ws,
-                                device_id=device_id, service_id=service_id,
-                                dev_name=dev_name, label=btn_label,
-                                command_type=cmd_type,
-                                unique_id=make_unique_id(device_id, service_id, uid_sfx),
-                            ))
-
-            # ── dishdrawer.state.legacy → start/stop/pause buttons ────────────
-            elif stype == DISHDRAWER_STATE_LEGACY_SERVICE:
-                ws = bucket.get("client") or bucket.get("ws")
-                if ws:
-                    for btn_label, cmd_type, uid_sfx in [
-                        ("Start",  CMD_DISHDRAWER_STATE_LEGACY_START, "ddr_start"),
-                        ("Stop",   CMD_DISHDRAWER_STATE_LEGACY_STOP,  "ddr_stop"),
-                        ("Pause",  CMD_DISHDRAWER_STATE_LEGACY_PAUSE, "ddr_pause"),
-                    ]:
-                        if cmd_type in cmds:
-                            entities.append(SmartHQDishwasherStateButton(
-                                hass=hass, entry=entry, ws=ws,
-                                device_id=device_id, service_id=service_id,
-                                dev_name=dev_name, label=f"Dishdrawer {btn_label}",
-                                command_type=cmd_type,
-                                unique_id=make_unique_id(device_id, service_id, uid_sfx),
-                            ))
-
-            # ── cooking.advantium → start/stop/pause/resume buttons ───────────
-            elif stype == COOKING_ADVANTIUM_SERVICE:
-                ws = bucket.get("client") or bucket.get("ws")
-                if ws:
-                    for btn_label, cmd_type, uid_sfx, icon in [
-                        ("Start",  CMD_ADVANTIUM_START,  "adv_start",  "mdi:play"),
-                        ("Stop",   CMD_ADVANTIUM_STOP,   "adv_stop",   "mdi:stop"),
-                        ("Pause",  CMD_ADVANTIUM_PAUSE,  "adv_pause",  "mdi:pause"),
-                        ("Resume", CMD_ADVANTIUM_RESUME, "adv_resume", "mdi:play-pause"),
-                    ]:
-                        if cmd_type in cmds:
-                            entities.append(SmartHQAdvantiumButton(
-                                hass=hass, entry=entry, ws=ws,
-                                device_id=device_id, service_id=service_id,
-                                dev_name=dev_name, label=btn_label,
-                                command_type=cmd_type, icon=icon,
-                                unique_id=make_unique_id(device_id, service_id, uid_sfx),
-                            ))
-
-            # ── mixer.v1 → cancel/pause buttons ──────────────────────────────
-            elif stype == MIXER_SERVICE:
-                ws = bucket.get("client") or bucket.get("ws")
-                if ws:
-                    for btn_label, cmd_type, uid_sfx, icon in [
-                        ("Cancel", CMD_MIXER_CANCEL, "mixer_cancel", "mdi:stop"),
-                        ("Pause",  CMD_MIXER_PAUSE,  "mixer_pause",  "mdi:pause"),
-                    ]:
-                        if cmd_type in cmds:
-                            entities.append(SmartHQAdvantiumButton(
-                                hass=hass, entry=entry, ws=ws,
-                                device_id=device_id, service_id=service_id,
-                                dev_name=dev_name, label=btn_label,
-                                command_type=cmd_type, icon=icon,
-                                unique_id=make_unique_id(device_id, service_id, uid_sfx),
-                            ))
+                            label = f"{spec.label_prefix}{btn_label}"
+                            if spec.cls == "ADV":
+                                entities.append(SmartHQAdvantiumButton(
+                                    hass=hass, entry=entry, ws=ws,
+                                    device_id=device_id, service_id=service_id,
+                                    dev_name=dev_name, label=label,
+                                    command_type=cmd_type, icon=icon,
+                                    unique_id=make_unique_id(device_id, service_id, uid_sfx),
+                                ))
+                            else:
+                                entities.append(SmartHQDishwasherStateButton(
+                                    hass=hass, entry=entry, ws=ws,
+                                    device_id=device_id, service_id=service_id,
+                                    dev_name=dev_name, label=label,
+                                    command_type=cmd_type,
+                                    unique_id=make_unique_id(device_id, service_id, uid_sfx),
+                                ))
 
         # One cooking start button per device that has cooking.mode.v1 startable services
         if has_cooking_mode:
@@ -271,25 +273,106 @@ class _SmartHQButtonBase(ButtonEntity):
         self._device_id = device_id
         self._attr_unique_id = unique_id
 
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to WS device updates so available/state re-evaluates."""
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_DEVICE_UPDATED.format(device_id=self._device_id),
+                self.async_write_ha_state,
+            )
+        )
+
     @property
     def device_info(self):
         return _device_info_for(self.hass, self._entry, self._device_id)
 
 
 class SmartHQTriggerButton(_SmartHQButtonBase):
-    """Button for a trigger service — sends trigger.do with no parameters."""
+    """Button for a trigger service — sends trigger.do with no parameters.
+
+    entity_category is intentionally NOT set (None) so that user-facing
+    triggers like 'Start' appear in the Controls section, not Diagnostics.
+    Factory/restore triggers are disabled by default via the registry flag.
+    """
 
     _attr_icon = "mdi:gesture-tap-button"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, hass, entry, client, device_id, service_id,
-                 dev_name, label, svc, unique_id, disabled_by_default=False):
+                 dev_name, label, svc, unique_id):
         super().__init__(hass, entry, device_id, dev_name, unique_id)
         self._client = client
         self._service_id = service_id
         self._svc = svc  # full service dict for async_send_service_command
         self._attr_name = f"{dev_name} {label}"
-        self._attr_entity_registry_enabled_default = not disabled_by_default
+
+    def _device_presence(self) -> str:
+        """Return device presence status string (e.g. 'ONLINE', 'OFFLINE')."""
+        payload = _dev_payload(self.hass, self._entry, self._device_id)
+        pres = payload.get("presence") or {}
+        # The presence dict may use 'presence' or 'status' as the key
+        return str(pres.get("presence") or pres.get("status") or "UNKNOWN").upper()
+
+    @property
+    def available(self) -> bool:
+        """Mirror the GE SmartHQ app behaviour for trigger buttons.
+
+        For washer/dryer (devices that have a laundry.state.v1 service):
+          - Available ONLY when runStatus == "cloud.smarthq.type.runstatus.delayed"
+            (= Remote Start armed on panel + cycle queued for delayed/remote start).
+          - All other runStatus values (running, idle, paused…) → unavailable.
+          This exactly matches what the GE SmartHQ app shows.
+
+        For other devices (coffee brewer, dishwasher, etc.) that have no
+        laundry state service, fall back to the service-level ``disabled`` flag.
+        """
+        # 1. Device must be ONLINE (or unknown yet — optimistic)
+        status = self._device_presence()
+        if status not in ("ONLINE", "UNKNOWN"):
+            return False
+
+        snap = _snapshot_for(self.hass, self._entry, self._device_id)
+        services = snap.get("services") or {}
+        index = snap.get("index") or {}
+
+        # 2. Laundry device: use runStatus as the availability gate
+        #    - domain.start  → available only when runStatus == delayed
+        #    - domain.stop   → available only when runStatus == running
+        _LAUNDRY_STATE_STYPE = "cloud.smarthq.service.laundry.state.v1"
+        _LAUNDRY_DOM = "cloud.smarthq.domain.laundry"
+        laundry_sid = index.get((_LAUNDRY_STATE_STYPE, _LAUNDRY_DOM))
+        _LOGGER.debug(
+            "[TRIGGER_AVAIL] %s svc=%s index_keys=%s laundry_sid=%s",
+            self._device_id[:8], self._service_id[:8] if self._service_id else "?",
+            list(index.keys())[:5], laundry_sid,
+        )
+        if laundry_sid:
+            laundry_st = services.get(laundry_sid) or {}
+            run_status = laundry_st.get("runStatus", "")
+            svc_state = services.get(self._service_id) or {}
+            domain = svc_state.get("domainType", "")
+            _LOGGER.debug(
+                "[TRIGGER_AVAIL] run_status=%s domain=%s",
+                run_status, domain,
+            )
+            # runStatus values known to indicate machine is idle / not started:
+            _INACTIVE = {
+                "cloud.smarthq.type.runstatus.standby",
+                "cloud.smarthq.type.runstatus.idle",
+                "cloud.smarthq.type.runstatus.off",
+                "",
+            }
+            if domain.endswith(".stop"):
+                # Stop is available whenever the machine is NOT idle/standby/delayed
+                return run_status not in _INACTIVE and run_status != "cloud.smarthq.type.runstatus.delayed"
+            # Start: only when Remote Start is armed (delayed)
+            return run_status == "cloud.smarthq.type.runstatus.delayed"
+
+        # 3. Non-laundry devices: fall back to service-level disabled flag
+        svc_state = services.get(self._service_id) or {}
+        if not svc_state:
+            return True  # No snapshot yet — optimistic
+        return not svc_state.get("disabled", False)
 
     async def async_press(self) -> None:
         client = self._client or _bucket(self.hass, self._entry).get("client")

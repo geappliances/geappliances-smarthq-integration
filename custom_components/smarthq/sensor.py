@@ -84,6 +84,8 @@ from .service_registry import (
     METER_DOMAIN_UNIT_CLASS,
     get_device_services,
     make_unique_id,
+    get_service_mapping,
+    is_platform_mapped,
 )
 
 
@@ -1132,6 +1134,361 @@ def _iter_dynamic_sensors(hass: HomeAssistant, entry: ConfigEntry, device_id: st
     return result
 
 
+# ---------------------------------------------------------------------------
+# Phase 5: Data-driven standard sensor dispatch
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _SF:
+    """Specification for a single sensor field within a standard service."""
+
+    key: str                                   # state_key to read from WS snapshot
+    uid: str                                   # unique_id suffix
+    cls: str                                   # "L"=LaundryStateSensor "S"=ServiceSensor "T"=RawTempSensor
+    dev_cls: Any = None                        # SensorDeviceClass.* or None
+    unit: Any = None                           # unit string or None
+    cat: Optional[EntityCategory] = None       # entity_category
+    enabled: bool = True                       # entity_registry_enabled_default
+    label: str = ""                            # explicit label; "" → _camel_to_words(key)
+
+
+# Maps serviceType → list[_SF].  async_setup_entry delegates to _build_standard_sensors().
+_STANDARD_SENSOR_SPECS: dict[str, list[_SF]] = {
+    # ── firmware.v1 ────────────────────────────────────────────────────────
+    # Firmware version/status sensors are blocked; not exposed to users.
+    # FIRMWARE_SERVICE: [...],
+    # ── cycletimer ─────────────────────────────────────────────────────────
+    CYCLETIMER_SERVICE: [
+        _SF("timeRemaining", "timer_remaining", "S", dev_cls=SensorDeviceClass.DURATION, unit="s"),
+        _SF("timeElapsed",   "timer_elapsed",   "S", dev_cls=SensorDeviceClass.DURATION, unit="s"),
+    ],
+    # ── battery ────────────────────────────────────────────────────────────
+    BATTERY_SERVICE: [
+        _SF("level", "battery", "S", dev_cls=SensorDeviceClass.BATTERY, unit=PERCENTAGE, label="Battery Level"),
+    ],
+    # ── cooking.state.v1 ───────────────────────────────────────────────────
+    COOKING_STATE_SERVICE: [
+        _SF("cookingStatus", "cook_status", "S"),
+        _SF("runStatus",     "run_status",  "S"),
+    ],
+    # ── stopwatch ──────────────────────────────────────────────────────────
+    STOPWATCH_SERVICE: [
+        _SF("secondsElapsed", "stopwatch_elapsed", "S", dev_cls=SensorDeviceClass.DURATION, unit="s"),
+    ],
+    # ── volume.liquid.v1 ───────────────────────────────────────────────────
+    VOLUME_LIQUID_SERVICE: [
+        _SF("liters", "volume_liters", "S", dev_cls=SensorDeviceClass.WATER, unit=UnitOfVolume.LITERS),
+    ],
+    # ── scale.v1 ───────────────────────────────────────────────────────────
+    SCALE_SERVICE: [
+        _SF("weightCurrent", "scale_current", "S", dev_cls=SensorDeviceClass.WEIGHT, unit=UnitOfMass.GRAMS),
+        _SF("weightTarget",  "scale_target",  "S", dev_cls=SensorDeviceClass.WEIGHT, unit=UnitOfMass.GRAMS),
+    ],
+    # ── power.usage ────────────────────────────────────────────────────────
+    POWER_USAGE_SERVICE: [
+        _SF("instantaneousPower",    "power_instant", "S", dev_cls=SensorDeviceClass.POWER, unit=UnitOfPower.WATT),
+        _SF("wattSecondsSinceClear", "power_energy",  "S", unit="Ws"),
+    ],
+    # ── laundry.state.v1 ───────────────────────────────────────────────────
+    LAUNDRY_STATE_SERVICE: [
+        _SF("runStatus",           "laundry_run_status",  "L"),
+        _SF("cycle",               "laundry_cycle",       "L"),
+        _SF("subCycle",            "laundry_subcycle",    "L"),
+        _SF("laundrySpin",         "laundry_spin",        "L"),
+        _SF("laundryTemperature",  "laundry_temperature", "L"),
+        _SF("laundryRinse",        "laundry_rinse",       "L"),
+        _SF("laundrySoil",         "laundry_soil",        "L"),
+        _SF("laundryDrynessLevel", "laundry_dryness",     "L"),
+        _SF("stain",               "laundry_stain",       "L"),
+    ],
+    # ── delaywindow ────────────────────────────────────────────────────────
+    DELAYWINDOW_SERVICE: [
+        _SF("startTime", "delay_start", "S"),
+        _SF("endTime",   "delay_end",   "S"),
+    ],
+    # ── brew.mode.v1 ───────────────────────────────────────────────────────
+    BREW_MODE_SERVICE: [
+        _SF("volume",          "brew_volume",      "S"),
+        _SF("grindTime",       "brew_grind_time",  "S", dev_cls=SensorDeviceClass.DURATION, unit="s"),
+        _SF("brewTemperature", "brew_temperature", "T", unit=UnitOfTemperature.CELSIUS),
+    ],
+    # ── coffeebrewer.v1 ────────────────────────────────────────────────────
+    COFFEEBREWER_V1_SERVICE: [
+        _SF("temperatureFahrenheit", "brew_current_temp", "T", unit=UnitOfTemperature.FAHRENHEIT, label="Brew Temperature"),
+    ],
+    # ── coffeebrewer.v2 ────────────────────────────────────────────────────
+    COFFEEBREWER_V2_SERVICE: [
+        _SF("temperatureFahrenheit", "brew_current_temp", "T", unit=UnitOfTemperature.FAHRENHEIT, label="Brew Temperature"),
+    ],
+    # ── dishwasher.state.v1 ────────────────────────────────────────────────
+    DISHWASHER_STATE_V1_SERVICE: [
+        _SF("runStatus",       "dw_run_status",  "L"),
+        _SF("mode",            "dw_mode",        "L"),
+        _SF("cycleIndication", "dw_cycle",       "L"),
+        _SF("delayStart",      "dw_delay_start", "L"),
+    ],
+    # ── dishdrawer.state.legacy ────────────────────────────────────────────
+    DISHDRAWER_STATE_LEGACY_SERVICE: [
+        _SF("runStatus",                  "ddr_run_status", "L"),
+        _SF("mode",                       "ddr_mode",       "L"),
+        _SF("cycleIndication",            "ddr_cycle",      "L"),
+        _SF("delayStart",                 "ddr_delay_start","L"),
+        _SF("dishdrawerModeLegacyOption", "ddr_option",     "L"),
+    ],
+    # ── dishwasher.rinse.agent ─────────────────────────────────────────────
+    DISHWASHER_RINSE_AGENT_SERVICE: [
+        _SF("rinseAgentStatus", "rinse_agent_status", "L"),
+    ],
+    # ── dishwasher.state.legacy ────────────────────────────────────────────
+    DISHWASHER_STATE_LEGACY_SERVICE: [
+        _SF("runStatus",       "dws_lg_run_status", "L"),
+        _SF("shortNameMode",   "dws_lg_mode",       "L"),
+        _SF("cycleIndication", "dws_lg_cycle",      "L"),
+        _SF("delayStart",      "dws_lg_delay",      "L"),
+        _SF("heatedDry",       "dws_lg_heated_dry", "L"),
+        _SF("washTemp",        "dws_lg_wash_temp",  "L"),
+        _SF("washZone",        "dws_lg_wash_zone",  "L"),
+    ],
+    # ── descale.v1 ─────────────────────────────────────────────────────────
+    DESCALE_V1_SERVICE: [
+        _SF("runStatus",         "descale_status", "S"),
+        _SF("volumeUntilNeeded", "descale_volume", "S", unit="mL"),
+    ],
+    # ── dryer.vent.health.mode ─────────────────────────────────────────────
+    DRYER_VENT_HEALTH_MODE_SERVICE: [
+        _SF("mode", "vent_health_mode", "L"),
+    ],
+    # ── laundry.bulktank ───────────────────────────────────────────────────
+    LAUNDRY_BULKTANK_SERVICE: [
+        _SF("tank1usagePercent", "bulktank1_pct", "S", unit=PERCENTAGE),
+        _SF("tank2usagePercent", "bulktank2_pct", "S", unit=PERCENTAGE),
+        _SF("tank1substance",    "bulktank1_sub", "L"),
+        _SF("tank2substance",    "bulktank2_sub", "L"),
+    ],
+    # ── outdoorunit.info ───────────────────────────────────────────────────
+    OUTDOORUNIT_INFO_SERVICE: [
+        _SF("modelNumber",  "outdoor_model",  "S", cat=EntityCategory.DIAGNOSTIC),
+        _SF("serialNumber", "outdoor_serial", "S", cat=EntityCategory.DIAGNOSTIC),
+    ],
+    # ── smartdispense ──────────────────────────────────────────────────────
+    SMARTDISPENSE_SERVICE: [
+        _SF("level",           "smartdisp_level",     "L"),
+        _SF("substance",       "smartdisp_substance", "L"),
+        _SF("cyclesRemaining", "smartdisp_cycles",    "L"),
+        _SF("dosing",          "smartdisp_dosing",    "L"),
+    ],
+    # ── cooking.oven.probe.temperature ─────────────────────────────────────
+    COOKING_OVEN_PROBE_TEMP_SERVICE: [
+        _SF("probeUpperDisplayTemperature", "probe_upper_temp", "T", unit=UnitOfTemperature.FAHRENHEIT),
+        _SF("probeLowerDisplayTemperature", "probe_lower_temp", "T", unit=UnitOfTemperature.FAHRENHEIT),
+    ],
+    # ── cooking.burner.status.v1 ───────────────────────────────────────────
+    COOKING_BURNER_STATUS_SERVICE: [
+        _SF("cooktopStatus", "burner_status",     "L"),
+        _SF("energySource",  "burner_energy_src", "L"),
+    ],
+    # ── cooking.advantium ─────────────────────────────────────────────────
+    COOKING_ADVANTIUM_SERVICE: [
+        _SF("advantiumCookMode",           "adv_cook_mode",   "L"),
+        _SF("cookAction",                  "adv_cook_action", "L"),
+        _SF("preheatStatus",               "adv_preheat",     "L"),
+        _SF("targetTemperatureFahrenheit", "adv_target_temp", "T", unit=UnitOfTemperature.FAHRENHEIT),
+    ],
+    # ── espressomaker.v1 ───────────────────────────────────────────────────
+    ESPRESSOMAKER_SERVICE: [
+        _SF("runStatus",            "espresso_status",    "L"),
+        _SF("brewType",             "espresso_brew_type", "L"),
+        _SF("brewTemperature",      "espresso_brew_temp", "T", unit=UnitOfTemperature.CELSIUS),
+        _SF("volume",               "espresso_volume",    "L"),
+        _SF("grindTime",            "espresso_grind",     "L"),
+        _SF("lifetimeCoffeeGround", "espresso_lifetime",  "L"),
+    ],
+    # ── mixer.v1 ──────────────────────────────────────────────────────────
+    MIXER_SERVICE: [
+        _SF("runStatus", "mixer_status",    "L"),
+        _SF("speed",     "mixer_speed",     "L"),
+        _SF("direction", "mixer_direction", "L"),
+    ],
+    # ── pizzaoven.state ────────────────────────────────────────────────────
+    PIZZAOVEN_STATE_SERVICE: [
+        _SF("operatingState",        "pzo_op_state",       "L"),
+        _SF("menuSelection",         "pzo_menu",           "L"),
+        _SF("timerState",            "pzo_timer_state",    "L"),
+        _SF("currentTimeRemaining",  "pzo_time_remaining", "L"),
+        _SF("domeFrontTemperature",  "pzo_dome_front",     "T", unit=UnitOfTemperature.FAHRENHEIT),
+        _SF("domeRearTemperature",   "pzo_dome_rear",      "T", unit=UnitOfTemperature.FAHRENHEIT),
+        _SF("stoneFrontTemperature", "pzo_stone_front",    "T", unit=UnitOfTemperature.FAHRENHEIT),
+        _SF("stoneRearTemperature",  "pzo_stone_rear",     "T", unit=UnitOfTemperature.FAHRENHEIT),
+    ],
+    # ── sourdoughstarter.v1 ────────────────────────────────────────────────
+    SOURDOUGHSTARTER_SERVICE: [
+        _SF("state",           "sourdough_state",   "L"),
+        _SF("mode",            "sourdough_mode",    "L"),
+        _SF("goalTimeHours",   "sourdough_goal_h",  "L"),
+        _SF("goalTimeMinutes", "sourdough_goal_m",  "L"),
+        _SF("flourRatio",      "sourdough_flour",   "L"),
+        _SF("waterRatio",      "sourdough_water",   "L"),
+        _SF("starterRatio",    "sourdough_starter", "L"),
+    ],
+    # ── cooktop.closedloop ─────────────────────────────────────────────────
+    COOKTOP_CLOSEDLOOP_SERVICE: [
+        _SF("primaryDeviceStatus",   "cl_primary_status",   "L"),
+        _SF("primaryDeviceType",     "cl_primary_type",     "L"),
+        _SF("primaryDeviceFamily",   "cl_primary_family",   "L"),
+        _SF("primaryShortId",        "cl_primary_id",       "L"),
+        _SF("secondaryDeviceStatus", "cl_secondary_status", "L"),
+        _SF("secondaryDeviceFamily", "cl_secondary_family", "L"),
+        _SF("secondaryShortId",      "cl_secondary_id",     "L"),
+    ],
+    # ── cooktop.sousvide ───────────────────────────────────────────────────
+    COOKTOP_SOUSVIDE_SERVICE: [
+        _SF("clcCurrentTemperature",          "sv_current_temp", "L"),
+        _SF("clcTargetTemperature",           "sv_target_temp",  "L"),
+        _SF("closedLoopCookingDeviceBattery", "sv_battery",      "L"),
+        _SF("bluetoothConnectionStatus",      "sv_bt_conn",      "L"),
+        _SF("bluetoothPairedStatus",          "sv_bt_paired",    "L"),
+        _SF("elapsedClosedLoopCookingTime",   "sv_elapsed_time", "L"),
+    ],
+    # ── oven.flextimer ─────────────────────────────────────────────────────
+    OVEN_FLEXTIMER_SERVICE: [
+        _SF("cookTimeTotalDuration", "flextimer_duration",    "L"),
+        _SF("addSubtractStatus",     "flextimer_addsubtract", "L"),
+        _SF("expirationStatus",      "flextimer_expiry",      "L"),
+    ],
+    # ── laundry.pethair ────────────────────────────────────────────────────
+    LAUNDRY_PETHAIR_SERVICE: [
+        _SF("disabled", "pethair_disabled", "L"),
+    ],
+    # ── dryer.config.cycle.v1 ─────────────────────────────────────────────
+    DRYER_CONFIG_CYCLE_V1_SERVICE: [
+        _SF("optionHeatHighMinutes",          "dryercfg_heat_high_min", "L"),
+        _SF("optionHeatMediumMinutes",        "dryercfg_heat_med_min",  "L"),
+        _SF("optionHeatLowMinutes",           "dryercfg_heat_low_min",  "L"),
+        _SF("optionHeatNoneMinutes",          "dryercfg_heat_none_min", "L"),
+        _SF("optionHeatHighCelsiusConverted", "dryercfg_heat_high_c",   "L"),
+        _SF("optionHeatLowCelsiusConverted",  "dryercfg_heat_low_c",    "L"),
+        _SF("disabled",                       "dryercfg_disabled",      "L"),
+    ],
+    # ── dryer.mycycle ──────────────────────────────────────────────────────
+    DRYER_MYCYCLE_SERVICE: [
+        _SF("myCycles", "dryer_mycycles", "L"),
+    ],
+    # ── washer.config.cycle.v1 ────────────────────────────────────────────
+    WASHER_CONFIG_CYCLE_V1_SERVICE: [
+        _SF("cycleWashColors",    "washercfg_colors",    "L"),
+        _SF("cycleWashWhites",    "washercfg_whites",    "L"),
+        _SF("cycleWashTowels",    "washercfg_towels",    "L"),
+        _SF("cycleWashDelicates", "washercfg_delicates", "L"),
+        _SF("cycleWashDeepClean", "washercfg_deepclean", "L"),
+        _SF("cycleWashSpeed",     "washercfg_speed",     "L"),
+        _SF("cycleWashCold",      "washercfg_spin_cold", "L"),
+        _SF("cycleWashWarm",      "washercfg_spin_warm", "L"),
+        _SF("cycleWashHot",       "washercfg_spin_hot",  "L"),
+        _SF("disabled",           "washercfg_disabled",  "L"),
+    ],
+    # ── washer.mycycle ────────────────────────────────────────────────────
+    WASHER_MYCYCLE_SERVICE: [
+        _SF("storedCycles", "washer_mycycles", "L"),
+    ],
+    # ── demandresponse.state.v1 ───────────────────────────────────────────
+    DEMANDRESPONSE_STATE_V1_SERVICE: [
+        _SF("systemStatus", "dr_system_status", "L"),
+        _SF("energyState",  "dr_energy_state",  "L"),
+        _SF("eventId",      "dr_event_id",      "L"),
+    ],
+    # ── oven.menutree ─────────────────────────────────────────────────────
+    OVEN_MENUTREE_SERVICE: [
+        _SF("sequence1",        "menutree_seq1",   "L"),
+        _SF("sequence2",        "menutree_seq2",   "L"),
+        _SF("uuidSelection1",   "menutree_uuid1",  "L"),
+        _SF("uuidSelection2",   "menutree_uuid2",  "L"),
+        _SF("shortnameCavity1", "menutree_short1", "L"),
+        _SF("shortnameCavity2", "menutree_short2", "L"),
+    ],
+    # ── laundry.commercial.v1 ─────────────────────────────────────────────
+    LAUNDRY_COMMERCIAL_V1_SERVICE: [
+        _SF("machineStatus",     "commercial_machine_status", "L"),
+        _SF("phaseCloud",        "commercial_phase_cloud",    "L"),
+        _SF("phaseDevice",       "commercial_phase_device",   "L"),
+        _SF("selectedCycle",     "commercial_selected_cycle", "L"),
+        _SF("heatOption",        "commercial_heat_option",    "L"),
+        _SF("soilOption",        "commercial_soil_option",    "L"),
+        _SF("temperatureOption", "commercial_temp_option",    "L"),
+    ],
+    # ── laundry.downloadablecycle ─────────────────────────────────────────
+    LAUNDRY_DOWNLOADABLECYCLE_SERVICE: [
+        _SF("downloadableCycleSelected", "dlcycle_selected", "L"),
+        _SF("featureVersion",            "dlcycle_version",  "L"),
+    ],
+    # ── demandresponse.event.v1 ───────────────────────────────────────────
+    DEMANDRESPONSE_EVENT_V1_SERVICE: [
+        _SF("eventId",           "dr_event_id",     "L"),
+        _SF("curtailmentLevel",  "dr_curtailment",  "L"),
+        _SF("temperatureOffset", "dr_temp_offset",  "L"),
+        _SF("eventStatus",       "dr_event_status", "L"),
+        _SF("userOption",        "dr_user_option",  "L"),
+    ],
+    # ── laundry.pricemenu.v1 ──────────────────────────────────────────────
+    LAUNDRY_PRICEMENU_V1_SERVICE: [
+        _SF("cycleWashCold",        "pm_wash_cold",       "L"),
+        _SF("cycleWashWarm",        "pm_wash_warm",       "L"),
+        _SF("cycleWashHot",         "pm_wash_hot",        "L"),
+        _SF("cycleWashDelicates",   "pm_wash_delicates",  "L"),
+        _SF("optionExtraRinse",     "pm_opt_extra_rinse", "L"),
+        _SF("optionSoilLight",      "pm_opt_soil_light",  "L"),
+        _SF("optionSoilMedium",     "pm_opt_soil_medium", "L"),
+        _SF("optionSoilHeavy",      "pm_opt_soil_heavy",  "L"),
+        _SF("optionHeatNone",       "pm_heat_none",       "L"),
+        _SF("optionHeatLow",        "pm_heat_low",        "L"),
+        _SF("optionHeatMedium",     "pm_heat_medium",     "L"),
+        _SF("optionHeatHigh",       "pm_heat_high",       "L"),
+        _SF("adjustmentHeatNone",   "pm_adj_heat_none",   "L"),
+        _SF("adjustmentHeatLow",    "pm_adj_heat_low",    "L"),
+        _SF("adjustmentHeatMedium", "pm_adj_heat_med",    "L"),
+        _SF("adjustmentHeatHigh",   "pm_adj_heat_high",   "L"),
+    ],
+}
+
+
+def _build_standard_sensors(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    device_id: str,
+    service_id: str,
+    dev_name: str,
+    stype: str,
+    existing_uids: set[str],
+) -> list[SensorEntity]:
+    """Create sensor entities for a standard (data-driven) serviceType."""
+    result: list[SensorEntity] = []
+    for f in _STANDARD_SENSOR_SPECS.get(stype, []):
+        uid = make_unique_id(device_id, service_id, f.uid)
+        if uid in existing_uids:
+            continue
+        label = f.label if f.label else _camel_to_words(f.key)
+        if f.cls == "L":
+            entity: SensorEntity = SmartHQLaundryStateSensor(
+                hass, entry, device_id, service_id, dev_name, label, f.key, uid,
+            )
+        elif f.cls == "T":
+            entity = SmartHQRawTempSensor(
+                hass, entry, device_id, service_id, dev_name, label, f.key, f.unit, uid,
+            )
+        else:  # "S"
+            kwargs: dict = {}
+            if f.cat is not None:
+                kwargs["entity_category"] = f.cat
+            if not f.enabled:
+                kwargs["enabled_default"] = False
+            entity = SmartHQServiceSensor(
+                hass, entry, device_id, service_id, dev_name,
+                label, f.key, f.dev_cls, f.unit, uid, **kwargs,
+            )
+        result.append(entity)
+        existing_uids.add(uid)
+    return result
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities) -> None:
     """Set up SmartHQ sensor entities.
 
@@ -1170,6 +1527,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 service_id = svc.get("id") or svc.get("serviceId") or ""
                 cmds: list = svc.get("supportedCommands") or []
                 cfg = svc.get("config") or {}
+
+                # ── Allowlist check ──
+                if get_service_mapping(stype) is None:
+                    _LOGGER.debug("[SENSOR] Skipping unmapped serviceType=%s", stype)
+                    continue
+                if not is_platform_mapped(stype, "sensor"):
+                    continue
 
                 # ── temperature sensor (read-only) ──────────────────────────
                 if stype == TEMPERATURE_SERVICE and CMD_TEMPERATURE_SET not in cmds:
@@ -1232,39 +1596,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                         ))
                         existing_uids.add(uid)
 
-                # ── firmware version sensors (hidden by default — diagnostic only) ──
-                elif stype == FIRMWARE_SERVICE:
-                    for state_key, uid_sfx in [
-                        ("versionCurrent",   "fw_current"),
-                        ("versionAvailable", "fw_available"),
-                        ("upgradeStatus",    "fw_status"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQServiceSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key,
-                                None, None, uid,
-                                entity_category=EntityCategory.DIAGNOSTIC,
-                                enabled_default=False,
-                            ))
-                            existing_uids.add(uid)
-
-                # ── cycletimer sensor ───────────────────────────────────────
-                elif stype == CYCLETIMER_SERVICE:
-                    for state_key, uid_sfx in [
-                        ("timeRemaining", "timer_remaining"),
-                        ("timeElapsed",   "timer_elapsed"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQServiceSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _label_for_key(state_key, stype, dom), state_key,
-                                SensorDeviceClass.DURATION, "s", uid,
-                            ))
-                            existing_uids.add(uid)
-
                 # ── double sensor (float value) ─────────────────────────────
                 elif stype == DOUBLE_SERVICE:
                     label_base = cfg.get("label") or _camel_to_words(dom.split(".")[-1])
@@ -1290,675 +1621,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                         ))
                         existing_uids.add(uid)
 
-                # ── battery sensor ──────────────────────────────────────────
-                elif stype == BATTERY_SERVICE:
-                    uid = make_unique_id(device_id, service_id, "battery")
-                    if uid not in existing_uids:
-                        entities.append(SmartHQServiceSensor(
-                            hass, entry, device_id, service_id, dev_name,
-                            _camel_to_words("batteryLevel"), "level",
-                            SensorDeviceClass.BATTERY, PERCENTAGE, uid,
-                        ))
-                        existing_uids.add(uid)
-
-                # ── cooking state sensor (read-only status) ─────────────────
-                elif stype == COOKING_STATE_SERVICE:
-                    for state_key, uid_sfx in [
-                        ("cookingStatus", "cook_status"),
-                        ("runStatus",     "run_status"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQServiceSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key,
-                                None, None, uid,
-                            ))
-                            existing_uids.add(uid)
-
-                # ── stopwatch sensor ───────────────────────────────────────
-                elif stype == STOPWATCH_SERVICE:
-                    uid = make_unique_id(device_id, service_id, "stopwatch_elapsed")
-                    if uid not in existing_uids:
-                        entities.append(SmartHQServiceSensor(
-                            hass, entry, device_id, service_id, dev_name,
-                            _camel_to_words("secondsElapsed"), "secondsElapsed",
-                            SensorDeviceClass.DURATION, "s", uid,
-                        ))
-                        existing_uids.add(uid)
-
-                # ── volume.liquid.v1 sensor ─────────────────────────────────
-                elif stype == VOLUME_LIQUID_SERVICE:
-                    uid = make_unique_id(device_id, service_id, "volume_liters")
-                    if uid not in existing_uids:
-                        entities.append(SmartHQServiceSensor(
-                            hass, entry, device_id, service_id, dev_name,
-                            _camel_to_words("liters"), "liters",
-                            SensorDeviceClass.WATER, UnitOfVolume.LITERS, uid,
-                        ))
-                        existing_uids.add(uid)
-
-                # ── scale.v1 sensors ────────────────────────────────────────
-                elif stype == SCALE_SERVICE:
-                    for state_key, uid_sfx in [
-                        ("weightCurrent", "scale_current"),
-                        ("weightTarget",  "scale_target"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQServiceSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key,
-                                SensorDeviceClass.WEIGHT, UnitOfMass.GRAMS, uid,
-                            ))
-                            existing_uids.add(uid)
-
-                # ── power.usage sensors ─────────────────────────────────────
-                elif stype == POWER_USAGE_SERVICE:
-                    for state_key, uid_sfx, dev_cls, unit in [
-                        ("instantaneousPower",    "power_instant", SensorDeviceClass.POWER, UnitOfPower.WATT),
-                        ("wattSecondsSinceClear", "power_energy",  None,                    "Ws"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQServiceSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key,
-                                dev_cls, unit, uid,
-                            ))
-                            existing_uids.add(uid)
-
-                # ── laundry state sensor ────────────────────────────────────
-                elif stype == LAUNDRY_STATE_SERVICE:
-                    _LOGGER.debug(
-                        "[LAUNDRY_SENSOR] device=%s dev_name=%r service_id=%s creating sensors",
-                        device_id[:8], dev_name, service_id[:8],
-                    )
-                    for state_key, uid_sfx in [
-                        ("runStatus",          "laundry_run_status"),
-                        ("cycle",              "laundry_cycle"),
-                        ("subCycle",           "laundry_subcycle"),
-                        ("laundrySpin",        "laundry_spin"),
-                        ("laundryTemperature", "laundry_temperature"),
-                        ("laundryRinse",       "laundry_rinse"),
-                        ("laundrySoil",        "laundry_soil"),
-                        ("laundryDrynessLevel","laundry_dryness"),
-                        ("stain",              "laundry_stain"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQLaundryStateSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, uid,
-                            ))
-                            existing_uids.add(uid)
-
-                # ── delaywindow sensors ─────────────────────────────────────
-                elif stype == DELAYWINDOW_SERVICE:
-                    for state_key, uid_sfx in [
-                        ("startTime", "delay_start"),
-                        ("endTime",   "delay_end"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQServiceSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key,
-                                None, None, uid,
-                            ))
-                            existing_uids.add(uid)
-
-                # ── brew.mode.v1 sensors ────────────────────────────────────
-                elif stype == BREW_MODE_SERVICE:
-                    for state_key, uid_sfx, dev_cls, unit in [
-                        ("volume",          "brew_volume",      None,                          None),
-                        ("grindTime",       "brew_grind_time",  SensorDeviceClass.DURATION,    "s"),
-                        ("brewTemperature", "brew_temperature", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.CELSIUS),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            if dev_cls == SensorDeviceClass.TEMPERATURE:
-                                entities.append(SmartHQRawTempSensor(
-                                    hass, entry, device_id, service_id, dev_name,
-                                    _label_for_key(state_key, stype, dom), state_key,
-                                    unit, uid,
-                                ))
-                            else:
-                                entities.append(SmartHQServiceSensor(
-                                    hass, entry, device_id, service_id, dev_name,
-                                    _label_for_key(state_key, stype, dom), state_key,
-                                    dev_cls, unit, uid,
-                                ))
-                            existing_uids.add(uid)
-
-                # ── coffeebrewer.v1 / .v2 current temperature sensor ─────────
-                elif stype in (COFFEEBREWER_V1_SERVICE, COFFEEBREWER_V2_SERVICE):
-                    uid = make_unique_id(device_id, service_id, "brew_current_temp")
-                    if uid not in existing_uids:
-                        entities.append(SmartHQRawTempSensor(
-                            hass, entry, device_id, service_id, dev_name,
-                            "Brew Temperature", "temperatureFahrenheit",
-                            UnitOfTemperature.FAHRENHEIT, uid,
-                        ))
-                        existing_uids.add(uid)
-
-                # ── dishwasher.state.v1 sensors ─────────────────────────────
-                elif stype == DISHWASHER_STATE_V1_SERVICE:
-                    for state_key, uid_sfx in [
-                        ("runStatus",       "dw_run_status"),
-                        ("mode",            "dw_mode"),
-                        ("cycleIndication", "dw_cycle"),
-                        ("delayStart",      "dw_delay_start"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQLaundryStateSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, uid,
-                            ))
-                            existing_uids.add(uid)
-
-                # ── dishdrawer.state.legacy sensors ──────────────────────────
-                elif stype == DISHDRAWER_STATE_LEGACY_SERVICE:
-                    for state_key, uid_sfx in [
-                        ("runStatus",                  "ddr_run_status"),
-                        ("mode",                       "ddr_mode"),
-                        ("cycleIndication",            "ddr_cycle"),
-                        ("delayStart",                 "ddr_delay_start"),
-                        ("dishdrawerModeLegacyOption", "ddr_option"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQLaundryStateSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, uid,
-                            ))
-                            existing_uids.add(uid)
-
-                # ── dishwasher.rinse.agent sensor ────────────────────────────
-                elif stype == DISHWASHER_RINSE_AGENT_SERVICE:
-                    uid = make_unique_id(device_id, service_id, "rinse_agent_status")
-                    if uid not in existing_uids:
-                        entities.append(SmartHQLaundryStateSensor(
-                            hass, entry, device_id, service_id, dev_name,
-                            _camel_to_words("rinseAgentStatus"), "rinseAgentStatus", uid,
-                        ))
-                        existing_uids.add(uid)
-
-                # ── dishwasher.state.legacy sensors ──────────────────────────
-                elif stype == DISHWASHER_STATE_LEGACY_SERVICE:
-                    for state_key, uid_sfx in [
-                        ("runStatus",       "dws_lg_run_status"),
-                        ("shortNameMode",   "dws_lg_mode"),
-                        ("cycleIndication", "dws_lg_cycle"),
-                        ("delayStart",      "dws_lg_delay"),
-                        ("heatedDry",       "dws_lg_heated_dry"),
-                        ("washTemp",        "dws_lg_wash_temp"),
-                        ("washZone",        "dws_lg_wash_zone"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQLaundryStateSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, uid,
-                            ))
-                            existing_uids.add(uid)
-
-                # ── descale.v1 sensors ───────────────────────────────────────
-                elif stype == DESCALE_V1_SERVICE:
-                    for state_key, uid_sfx, dev_cls, unit in [
-                        ("runStatus",         "descale_status", None, None),
-                        ("volumeUntilNeeded", "descale_volume", None, "mL"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQServiceSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key,
-                                dev_cls, unit, uid,
-                            ))
-                            existing_uids.add(uid)
-
-                # ── dryer.vent.health.mode sensors ───────────────────────────
-                elif stype == DRYER_VENT_HEALTH_MODE_SERVICE:
-                    uid = make_unique_id(device_id, service_id, "vent_health_mode")
-                    if uid not in existing_uids:
-                        entities.append(SmartHQLaundryStateSensor(
-                            hass, entry, device_id, service_id, dev_name,
-                            _label_for_key("mode", stype, dom), "mode", uid,
-                        ))
-                        existing_uids.add(uid)
-
-                # ── laundry.bulktank sensors ─────────────────────────────────
-                elif stype == LAUNDRY_BULKTANK_SERVICE:
-                    for state_key, uid_sfx, dev_cls, unit in [
-                        ("tank1usagePercent", "bulktank1_pct", None, PERCENTAGE),
-                        ("tank2usagePercent", "bulktank2_pct", None, PERCENTAGE),
-                        ("tank1substance",    "bulktank1_sub", None, None),
-                        ("tank2substance",    "bulktank2_sub", None, None),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQLaundryStateSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, uid,
-                            ) if dev_cls is None and unit is None else SmartHQServiceSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, dev_cls, unit, uid,
-                            ))
-                            existing_uids.add(uid)
-
-                # ── outdoorunit.info sensors ─────────────────────────────────
-                elif stype == OUTDOORUNIT_INFO_SERVICE:
-                    for state_key, uid_sfx in [
-                        ("modelNumber",  "outdoor_model"),
-                        ("serialNumber", "outdoor_serial"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQServiceSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key,
-                                None, None, uid,
-                                entity_category=EntityCategory.DIAGNOSTIC,
-                            ))
-                            existing_uids.add(uid)
-
-                # ── smartdispense sensors ─────────────────────────────────────
-                elif stype == SMARTDISPENSE_SERVICE:
-                    for state_key, uid_sfx in [
-                        ("level",           "smartdisp_level"),
-                        ("substance",       "smartdisp_substance"),
-                        ("cyclesRemaining", "smartdisp_cycles"),
-                        ("dosing",          "smartdisp_dosing"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQLaundryStateSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, uid,
-                            ))
-                            existing_uids.add(uid)
-
-                # ── cooking.oven.probe.temperature sensors ────────────────────
-                elif stype == COOKING_OVEN_PROBE_TEMP_SERVICE:
-                    for state_key, uid_sfx in [
-                        ("probeUpperDisplayTemperature", "probe_upper_temp"),
-                        ("probeLowerDisplayTemperature", "probe_lower_temp"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQRawTempSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key,
-                                UnitOfTemperature.FAHRENHEIT, uid,
-                            ))
-                            existing_uids.add(uid)
-
-                # ── cooking.burner.status.v1 sensors ─────────────────────────
-                elif stype == COOKING_BURNER_STATUS_SERVICE:
-                    for state_key, uid_sfx in [
-                        ("cooktopStatus", "burner_status"),
-                        ("energySource",  "burner_energy_src"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQLaundryStateSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, uid,
-                            ))
-                            existing_uids.add(uid)
-
-                # ── cooking.advantium sensors ─────────────────────────────────
-                elif stype == COOKING_ADVANTIUM_SERVICE:
-                    for state_key, uid_sfx, dev_cls, unit in [
-                        ("advantiumCookMode",           "adv_cook_mode",   None,                          None),
-                        ("cookAction",                  "adv_cook_action", None,                          None),
-                        ("preheatStatus",               "adv_preheat",     None,                          None),
-                        ("targetTemperatureFahrenheit", "adv_target_temp", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.FAHRENHEIT),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            if dev_cls == SensorDeviceClass.TEMPERATURE:
-                                entities.append(SmartHQRawTempSensor(
-                                    hass, entry, device_id, service_id, dev_name,
-                                    _camel_to_words(state_key), state_key,
-                                    unit, uid,
-                                ))
-                            elif dev_cls is None:
-                                entities.append(SmartHQLaundryStateSensor(
-                                    hass, entry, device_id, service_id, dev_name,
-                                    _camel_to_words(state_key), state_key, uid,
-                                ))
-                            else:
-                                entities.append(SmartHQServiceSensor(
-                                    hass, entry, device_id, service_id, dev_name,
-                                    _camel_to_words(state_key), state_key, dev_cls, unit, uid,
-                                ))
-                            existing_uids.add(uid)
-
-                # ── espressomaker.v1 sensors ──────────────────────────────────
-                elif stype == ESPRESSOMAKER_SERVICE:
-                    for state_key, uid_sfx, dev_cls, unit in [
-                        ("runStatus",            "espresso_status",   None,                          None),
-                        ("brewType",             "espresso_brew_type",None,                          None),
-                        ("brewTemperature",      "espresso_brew_temp",SensorDeviceClass.TEMPERATURE, UnitOfTemperature.CELSIUS),
-                        ("volume",               "espresso_volume",   None,                          None),
-                        ("grindTime",            "espresso_grind",    None,                          None),
-                        ("lifetimeCoffeeGround", "espresso_lifetime", None,                          None),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            if dev_cls == SensorDeviceClass.TEMPERATURE:
-                                entities.append(SmartHQRawTempSensor(
-                                    hass, entry, device_id, service_id, dev_name,
-                                    _camel_to_words(state_key), state_key,
-                                    unit, uid,
-                                ))
-                            elif dev_cls is None:
-                                entities.append(SmartHQLaundryStateSensor(
-                                    hass, entry, device_id, service_id, dev_name,
-                                    _camel_to_words(state_key), state_key, uid,
-                                ))
-                            else:
-                                entities.append(SmartHQServiceSensor(
-                                    hass, entry, device_id, service_id, dev_name,
-                                    _camel_to_words(state_key), state_key, dev_cls, unit, uid,
-                                ))
-                            existing_uids.add(uid)
-
-                # ── mixer.v1 sensors ──────────────────────────────────────────
-                elif stype == MIXER_SERVICE:
-                    for state_key, uid_sfx in [
-                        ("runStatus",  "mixer_status"),
-                        ("speed",      "mixer_speed"),
-                        ("direction",  "mixer_direction"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQLaundryStateSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, uid,
-                            ))
-                            existing_uids.add(uid)
-
-                # ── pizzaoven.state sensors ───────────────────────────────────
-                elif stype == PIZZAOVEN_STATE_SERVICE:
-                    for state_key, uid_sfx, dev_cls, unit in [
-                        ("operatingState",       "pzo_op_state",       None,                          None),
-                        ("menuSelection",        "pzo_menu",           None,                          None),
-                        ("timerState",           "pzo_timer_state",    None,                          None),
-                        ("currentTimeRemaining", "pzo_time_remaining", None,                          None),
-                        ("domeFrontTemperature", "pzo_dome_front",     SensorDeviceClass.TEMPERATURE, UnitOfTemperature.FAHRENHEIT),
-                        ("domeRearTemperature",  "pzo_dome_rear",      SensorDeviceClass.TEMPERATURE, UnitOfTemperature.FAHRENHEIT),
-                        ("stoneFrontTemperature","pzo_stone_front",    SensorDeviceClass.TEMPERATURE, UnitOfTemperature.FAHRENHEIT),
-                        ("stoneRearTemperature", "pzo_stone_rear",     SensorDeviceClass.TEMPERATURE, UnitOfTemperature.FAHRENHEIT),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            if dev_cls == SensorDeviceClass.TEMPERATURE:
-                                entities.append(SmartHQRawTempSensor(
-                                    hass, entry, device_id, service_id, dev_name,
-                                    _camel_to_words(state_key), state_key,
-                                    unit, uid,
-                                ))
-                            else:
-                                entities.append(SmartHQLaundryStateSensor(
-                                    hass, entry, device_id, service_id, dev_name,
-                                    _camel_to_words(state_key), state_key, uid,
-                                ))
-                            existing_uids.add(uid)
-
-                # ── sourdoughstarter.v1 sensors ───────────────────────────────
-                elif stype == SOURDOUGHSTARTER_SERVICE:
-                    for state_key, uid_sfx in [
-                        ("state",          "sourdough_state"),
-                        ("mode",           "sourdough_mode"),
-                        ("goalTimeHours",  "sourdough_goal_h"),
-                        ("goalTimeMinutes","sourdough_goal_m"),
-                        ("flourRatio",     "sourdough_flour"),
-                        ("waterRatio",     "sourdough_water"),
-                        ("starterRatio",   "sourdough_starter"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQLaundryStateSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, uid,
-                            ))
-                            existing_uids.add(uid)
-
-                # ── cooktop.closedloop sensors ────────────────────────────────
-                elif stype == COOKTOP_CLOSEDLOOP_SERVICE:
-                    for state_key, uid_sfx in [
-                        ("primaryDeviceStatus",   "cl_primary_status"),
-                        ("primaryDeviceType",     "cl_primary_type"),
-                        ("primaryDeviceFamily",   "cl_primary_family"),
-                        ("primaryShortId",        "cl_primary_id"),
-                        ("secondaryDeviceStatus", "cl_secondary_status"),
-                        ("secondaryDeviceFamily", "cl_secondary_family"),
-                        ("secondaryShortId",      "cl_secondary_id"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQLaundryStateSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, uid,
-                            ))
-                            existing_uids.add(uid)
-
-                # ── cooktop.sousvide sensors ──────────────────────────────────
-                elif stype == COOKTOP_SOUSVIDE_SERVICE:
-                    for state_key, uid_sfx in [
-                        ("clcCurrentTemperature",          "sv_current_temp"),
-                        ("clcTargetTemperature",           "sv_target_temp"),
-                        ("closedLoopCookingDeviceBattery", "sv_battery"),
-                        ("bluetoothConnectionStatus",      "sv_bt_conn"),
-                        ("bluetoothPairedStatus",          "sv_bt_paired"),
-                        ("elapsedClosedLoopCookingTime",   "sv_elapsed_time"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQLaundryStateSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, uid,
-                            ))
-                            existing_uids.add(uid)
-
-                # ── oven.flextimer sensors ────────────────────────────────────
-                elif stype == OVEN_FLEXTIMER_SERVICE:
-                    for state_key, uid_sfx in [
-                        ("cookTimeTotalDuration", "flextimer_duration"),
-                        ("addSubtractStatus",     "flextimer_addsubtract"),
-                        ("expirationStatus",      "flextimer_expiry"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQLaundryStateSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, uid,
-                            ))
-                            existing_uids.add(uid)
-
-                # ── laundry.pethair sensor ────────────────────────────────────
-                elif stype == LAUNDRY_PETHAIR_SERVICE:
-                    uid = make_unique_id(device_id, service_id, "pethair_disabled")
-                    if uid not in existing_uids:
-                        entities.append(SmartHQLaundryStateSensor(
-                            hass, entry, device_id, service_id, dev_name,
-                            _camel_to_words("disabled"), "disabled", uid,
-                        ))
-                        existing_uids.add(uid)
-
-                # ── dryer.config.cycle.v1 sensors ────────────────────────────
-                elif stype == DRYER_CONFIG_CYCLE_V1_SERVICE:
-                    for state_key, uid_sfx in [
-                        ("optionHeatHighMinutes",          "dryercfg_heat_high_min"),
-                        ("optionHeatMediumMinutes",        "dryercfg_heat_med_min"),
-                        ("optionHeatLowMinutes",           "dryercfg_heat_low_min"),
-                        ("optionHeatNoneMinutes",          "dryercfg_heat_none_min"),
-                        ("optionHeatHighCelsiusConverted", "dryercfg_heat_high_c"),
-                        ("optionHeatLowCelsiusConverted",  "dryercfg_heat_low_c"),
-                        ("disabled",                      "dryercfg_disabled"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQLaundryStateSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, uid,
-                            ))
-                            existing_uids.add(uid)
-
-                # ── dryer.mycycle sensor ──────────────────────────────────────
-                elif stype == DRYER_MYCYCLE_SERVICE:
-                    uid = make_unique_id(device_id, service_id, "dryer_mycycles")
-                    if uid not in existing_uids:
-                        entities.append(SmartHQLaundryStateSensor(
-                            hass, entry, device_id, service_id, dev_name,
-                            _camel_to_words("myCycles"), "myCycles", uid,
-                        ))
-                        existing_uids.add(uid)
-
-                # ── washer.config.cycle.v1 sensors ───────────────────────────
-                elif stype == WASHER_CONFIG_CYCLE_V1_SERVICE:
-                    for state_key, uid_sfx in [
-                        ("cycleWashColors",    "washercfg_colors"),
-                        ("cycleWashWhites",    "washercfg_whites"),
-                        ("cycleWashTowels",    "washercfg_towels"),
-                        ("cycleWashDelicates", "washercfg_delicates"),
-                        ("cycleWashDeepClean", "washercfg_deepclean"),
-                        ("cycleWashSpeed",     "washercfg_speed"),
-                        ("cycleWashCold",      "washercfg_spin_cold"),
-                        ("cycleWashWarm",      "washercfg_spin_warm"),
-                        ("cycleWashHot",       "washercfg_spin_hot"),
-                        ("disabled",           "washercfg_disabled"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQLaundryStateSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, uid,
-                            ))
-                            existing_uids.add(uid)
-
-                # ── washer.mycycle sensor ─────────────────────────────────────
-                elif stype == WASHER_MYCYCLE_SERVICE:
-                    uid = make_unique_id(device_id, service_id, "washer_mycycles")
-                    if uid not in existing_uids:
-                        entities.append(SmartHQLaundryStateSensor(
-                            hass, entry, device_id, service_id, dev_name,
-                            _camel_to_words("storedCycles"), "storedCycles", uid,
-                        ))
-                        existing_uids.add(uid)
-
-                # ── demandresponse.state.v1 sensors ──────────────────────────
-                elif stype == DEMANDRESPONSE_STATE_V1_SERVICE:
-                    for state_key, uid_sfx in [
-                        ("systemStatus", "dr_system_status"),
-                        ("energyState",  "dr_energy_state"),
-                        ("eventId",      "dr_event_id"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQLaundryStateSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, uid,
-                            ))
-                            existing_uids.add(uid)
-
-                # ── oven.menutree sensors ─────────────────────────────────────
-                elif stype == OVEN_MENUTREE_SERVICE:
-                    for state_key, uid_sfx in [
-                        ("sequence1",        "menutree_seq1"),
-                        ("sequence2",        "menutree_seq2"),
-                        ("uuidSelection1",   "menutree_uuid1"),
-                        ("uuidSelection2",   "menutree_uuid2"),
-                        ("shortnameCavity1", "menutree_short1"),
-                        ("shortnameCavity2", "menutree_short2"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQLaundryStateSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, uid,
-                            ))
-                            existing_uids.add(uid)
-
-                # ── laundry.commercial.v1 sensors ────────────────────────────
-                elif stype == LAUNDRY_COMMERCIAL_V1_SERVICE:
-                    for state_key, uid_sfx in [
-                        ("machineStatus",    "commercial_machine_status"),
-                        ("phaseCloud",       "commercial_phase_cloud"),
-                        ("phaseDevice",      "commercial_phase_device"),
-                        ("selectedCycle",    "commercial_selected_cycle"),
-                        ("heatOption",       "commercial_heat_option"),
-                        ("soilOption",       "commercial_soil_option"),
-                        ("temperatureOption","commercial_temp_option"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQLaundryStateSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, uid,
-                            ))
-                            existing_uids.add(uid)
-
-                # ── laundry.downloadablecycle sensors ────────────────────────
-                elif stype == LAUNDRY_DOWNLOADABLECYCLE_SERVICE:
-                    for state_key, uid_sfx in [
-                        ("downloadableCycleSelected", "dlcycle_selected"),
-                        ("featureVersion",            "dlcycle_version"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQLaundryStateSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, uid,
-                            ))
-                            existing_uids.add(uid)
-
-                elif stype == DEMANDRESPONSE_EVENT_V1_SERVICE:
-                    for state_key, uid_sfx in [
-                        ("eventId",           "dr_event_id"),
-                        ("curtailmentLevel",  "dr_curtailment"),
-                        ("temperatureOffset", "dr_temp_offset"),
-                        ("eventStatus",       "dr_event_status"),
-                        ("userOption",        "dr_user_option"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQLaundryStateSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, uid,
-                            ))
-                            existing_uids.add(uid)
-
-                elif stype == LAUNDRY_PRICEMENU_V1_SERVICE:
-                    for state_key, uid_sfx in [
-                        ("cycleWashCold",        "pm_wash_cold"),
-                        ("cycleWashWarm",        "pm_wash_warm"),
-                        ("cycleWashHot",         "pm_wash_hot"),
-                        ("cycleWashDelicates",   "pm_wash_delicates"),
-                        ("optionExtraRinse",     "pm_opt_extra_rinse"),
-                        ("optionSoilLight",      "pm_opt_soil_light"),
-                        ("optionSoilMedium",     "pm_opt_soil_medium"),
-                        ("optionSoilHeavy",      "pm_opt_soil_heavy"),
-                        ("optionHeatNone",       "pm_heat_none"),
-                        ("optionHeatLow",        "pm_heat_low"),
-                        ("optionHeatMedium",     "pm_heat_medium"),
-                        ("optionHeatHigh",       "pm_heat_high"),
-                        ("adjustmentHeatNone",   "pm_adj_heat_none"),
-                        ("adjustmentHeatLow",    "pm_adj_heat_low"),
-                        ("adjustmentHeatMedium", "pm_adj_heat_med"),
-                        ("adjustmentHeatHigh",   "pm_adj_heat_high"),
-                    ]:
-                        uid = make_unique_id(device_id, service_id, uid_sfx)
-                        if uid not in existing_uids:
-                            entities.append(SmartHQLaundryStateSensor(
-                                hass, entry, device_id, service_id, dev_name,
-                                _camel_to_words(state_key), state_key, uid,
-                            ))
-                            existing_uids.add(uid)
+                # ── standard (data-driven) sensors ─────────────────────────
+                elif stype in _STANDARD_SENSOR_SPECS:
+                    entities.extend(_build_standard_sensors(
+                        hass, entry, device_id, service_id, dev_name, stype, existing_uids,
+                    ))
 
 
     # ── Source 2: WS snapshot cooking-state sensors ───────────────────────────

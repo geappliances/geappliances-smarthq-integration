@@ -250,10 +250,27 @@ class SmartHQWebsocket:
         # For light/brightness services, presence check is enough
         # These should work even when device is in standby (runStatus=off)
         is_light_service = any(keyword in service_type.lower() for keyword in ["light", "brightness"])
-        
+
         if is_light_service:
             _LOGGER.debug(
                 "[DEVICE_STATE] %s: Light service detected - skipping runStatus check",
+                device_id[:8]
+            )
+            return True, ""
+
+        # Preference/settings services (e.g. temperatureunits, mode selections
+        # that are device configuration rather than active cooking commands)
+        # do NOT require remoteEnable — they are always available when ONLINE.
+        _PREFERENCE_SERVICE_KEYWORDS = (
+            "temperatureunits",
+            "service.mode",
+            "service.setting",
+        )
+        is_preference_service = any(kw in service_type.lower() for kw in _PREFERENCE_SERVICE_KEYWORDS)
+
+        if is_preference_service:
+            _LOGGER.debug(
+                "[DEVICE_STATE] %s: Preference/settings service detected - skipping remoteEnable check",
                 device_id[:8]
             )
             return True, ""
@@ -1457,6 +1474,15 @@ class SmartHQWebsocket:
             cur_index.update(index)
             
             _LOGGER.debug("[SERVICE_UPDATE] %s: %d services updated", did[:8], len(svc_states))
+            # Log trigger service disabled state changes for Remote Start debugging
+            for sid, st in svc_states.items():
+                if st.get("serviceType") == "cloud.smarthq.service.trigger":
+                    _LOGGER.debug(
+                        "[TRIGGER_STATE] %s domain=%s disabled=%s",
+                        did[:8],
+                        st.get("domainType", "").split(".")[-1],
+                        st.get("disabled"),
+                    )
             async_dispatcher_send(self.hass, SIGNAL_DEVICE_UPDATED.format(device_id=did))
             return
 
