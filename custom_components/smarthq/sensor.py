@@ -1155,11 +1155,8 @@ class _SF:
 # Maps serviceType → list[_SF].  async_setup_entry delegates to _build_standard_sensors().
 _STANDARD_SENSOR_SPECS: dict[str, list[_SF]] = {
     # ── firmware.v1 ────────────────────────────────────────────────────────
-    FIRMWARE_SERVICE: [
-        _SF("versionCurrent",   "fw_current",   "S", cat=EntityCategory.DIAGNOSTIC, enabled=False),
-        _SF("versionAvailable", "fw_available", "S", cat=EntityCategory.DIAGNOSTIC, enabled=False),
-        _SF("upgradeStatus",    "fw_status",    "S", cat=EntityCategory.DIAGNOSTIC, enabled=False),
-    ],
+    # Firmware version/status sensors are blocked; not exposed to users.
+    # FIRMWARE_SERVICE: [...],
     # ── cycletimer ─────────────────────────────────────────────────────────
     CYCLETIMER_SERVICE: [
         _SF("timeRemaining", "timer_remaining", "S", dev_cls=SensorDeviceClass.DURATION, unit="s"),

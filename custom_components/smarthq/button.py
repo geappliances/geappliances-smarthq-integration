@@ -193,13 +193,11 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 ))
 
             # ── firmware upgrade → button ───────────────────────────────────
-            elif stype == FIRMWARE_SERVICE and CMD_FIRMWARE_UPGRADE in cmds:
-                entities.append(SmartHQFirmwareUpgradeButton(
-                    hass=hass, entry=entry, client=client,
-                    device_id=device_id, service_id=service_id,
-                    dev_name=dev_name,
-                    unique_id=make_unique_id(device_id, service_id, "fw_upgrade"),
-                ))
+            # Firmware upgrades are managed via the HA update entity or the
+            # SmartHQ app; exposing a raw trigger button is unsafe and confusing.
+            elif stype == FIRMWARE_SERVICE:
+                _LOGGER.debug("[BUTTON] Blocking firmware trigger for %s", device_id[:8])
+                continue
 
             # ── coffee brewer start/stop ────────────────────────────────────
             elif stype in (COFFEEBREWER_V1_SERVICE, COFFEEBREWER_V2_SERVICE):

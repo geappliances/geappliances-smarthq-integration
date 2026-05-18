@@ -265,12 +265,9 @@ async def async_setup_entry(
                     continue
 
                 if stype == FIRMWARE_SERVICE:
-                    uid = make_unique_id(device_id, service_id, "fw_update")
-                    if uid not in created:
-                        created.add(uid)
-                        coord_entities.append(
-                            SmartHQFirmwareUpdateBinarySensor(hass, entry, device_id, service_id, uid)
-                        )
+                    # Firmware update status is not exposed as a user-facing entity.
+                    _LOGGER.debug("[BINARY_SENSOR] Blocking firmware service for %s", device_id[:8])
+                    continue
 
                 elif stype == DOOR_SERVICE:
                     uid = make_unique_id(device_id, service_id, "door")
