@@ -620,6 +620,7 @@ class SmartHQModeSelect(SelectEntity):
         self._service_id = service_id
         self._attr_unique_id = unique_id
         self._dom = dom  # store for temperatureunits detection
+        self._sdev = sdev
 
         # Label from domain tail, with optional serviceDeviceType prefix
         dom_tail = dom.split(".")[-1].replace("_", " ").title() if dom else "Mode"
@@ -637,6 +638,76 @@ class SmartHQModeSelect(SelectEntity):
         self._name_to_token: Dict[str, str] = {}
         self._build_options_from_cfg(cfg)
 
+    # ------------------------------------------------------------------
+    # Convertible drawer temperature helpers
+    # ------------------------------------------------------------------
+    def _is_convertible_drawer_selection(self) -> bool:
+        """Return True if this is the convertible drawer mode selection entity.
+
+        The drawer Selection service has sdev = '...refrigerator.convertibledrawer'
+        (no modeN suffix), while the per-mode temperature services have
+        '...convertibledrawer.mode3', '...convertibledrawer.mode4', etc.
+        """
+        sdev = (self._sdev or "").lower()
+        if "convertibledrawer" not in sdev:
+            return False
+        tail = sdev.split("convertibledrawer")[-1]  # "" or ".mode3" etc.
+        return not tail.startswith(".mode")
+
+    def _get_drawer_mode_temp(self, mode_token: str) -> Optional[str]:
+        """Return the formatted temperature string for a given drawer mode token.
+
+        Looks up the temperature service for the matching
+        convertibledrawer.modeN serviceDeviceType in coordinator data.
+        e.g. mode_token = "cloud.smarthq.type.mode3" → sdev "...convertibledrawer.mode3"
+        """
+        # Extract mode number from token tail, e.g. "mode3" → "mode3"
+        tail = mode_token.split(".")[-1].lower()  # e.g. "mode3"
+        if not tail.startswith("mode"):
+            return None
+
+        bucket = _bucket(self.hass, self._entry)
+        coordinator = bucket.get("coordinator")
+        if not coordinator or not coordinator.data:
+            return None
+
+        dev_data = coordinator.data.get(self._device_id) or {}
+        services = (dev_data.get("item") or {}).get("services") or []
+
+        # Find temperature service for this specific drawer mode
+        from .service_registry import CMD_TEMPERATURE_SET
+        for svc in services:
+            if not isinstance(svc, dict):
+                continue
+            svc_sdev = (svc.get("serviceDeviceType") or "").lower()
+            # Match: ...convertibledrawer.modeN
+            if f"convertibledrawer.{tail}" not in svc_sdev:
+                continue
+            if svc.get("serviceType") != "temperature":
+                continue
+            cmds = [c.get("commandType") for c in (svc.get("supportedCommands") or []) if isinstance(c, dict)]
+            if CMD_TEMPERATURE_SET not in cmds:
+                continue
+            # Read current fahrenheit value from state
+            state = svc.get("state") or {}
+            raw_f = state.get("fahrenheit")
+            if raw_f is None:
+                # Try coordinator snapshot fallback
+                snap = _snapshot_for(self.hass, self._entry, self._device_id)
+                svc_id = svc.get("id") or svc.get("serviceId") or ""
+                raw_f = (snap.get("services") or {}).get(svc_id, {}).get("fahrenheit")
+            if raw_f is None:
+                return None
+            # Convert to display unit
+            from .sensor import _device_temp_is_f
+            is_f = _device_temp_is_f(self.hass, self._entry, self._device_id)
+            if is_f:
+                return f"{round(float(raw_f))}°F"
+            else:
+                c_val = round((float(raw_f) - 32) * 5 / 9)
+                return f"{c_val}°C"
+        return None
+
     def _build_options_from_cfg(self, cfg: dict) -> None:
         modes = cfg.get("supportedModes") or []
         tokens = []
@@ -648,6 +719,18 @@ class SmartHQModeSelect(SelectEntity):
         self._token_to_name = {t: _pretty(t) for t in tokens}
         self._name_to_token = {v: k for k, v in self._token_to_name.items()}
         self._attr_options = list(self._name_to_token.keys())
+
+    def _build_options_with_temps(self) -> None:
+        """For convertible drawer selection: append current temperature to each option label."""
+        new_token_to_name: Dict[str, str] = {}
+        for token, base_name in self._token_to_name.items():
+            temp_str = self._get_drawer_mode_temp(token)
+            new_token_to_name[token] = f"{base_name} ({temp_str})" if temp_str else base_name
+        # Rebuild reverse map and options list
+        self._name_to_token = {v: k for k, v in new_token_to_name.items()}
+        self._attr_options = list(self._name_to_token.keys())
+        # Keep base token_to_name unchanged for current_option lookup
+        self._token_to_display = new_token_to_name
 
     def _refresh_options_from_snapshot(self) -> None:
         """Update options from live WS snapshot (overrides coordinator config)."""
@@ -666,6 +749,8 @@ class SmartHQModeSelect(SelectEntity):
         self._token_to_name = {t: _pretty(t) for t in tokens}
         self._name_to_token = {v: k for k, v in self._token_to_name.items()}
         self._attr_options = list(self._name_to_token.keys())
+        if self._is_convertible_drawer_selection():
+            self._build_options_with_temps()
 
     @property
     def current_option(self) -> Optional[str]:
@@ -674,7 +759,9 @@ class SmartHQModeSelect(SelectEntity):
         token = svc.get("mode")
         if token is None:
             return None
-        return self._token_to_name.get(str(token)) or _pretty(str(token))
+        # Use display name (with temp suffix) if available
+        display_map = getattr(self, "_token_to_display", self._token_to_name)
+        return display_map.get(str(token)) or _pretty(str(token))
 
     @property
     def available(self) -> bool:
@@ -716,6 +803,9 @@ class SmartHQModeSelect(SelectEntity):
                 self._signal_update,
             )
         )
+        # For convertible drawer selection: build options with temps on initial load
+        if self._is_convertible_drawer_selection():
+            self._build_options_with_temps()
         self._signal_update()
 
     @callback
