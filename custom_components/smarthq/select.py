@@ -205,9 +205,11 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 warm_mode_only = "warm.auto" in dom
                 if warm_mode_only:
                     label = "Keep Warm Temperature"
-                # early.temperature (Early Alert threshold) → diagnostic, disabled by default
-                _disabled_by_default = "early.temperature" in dom
-                if _disabled_by_default:
+                # early.temperature → diagnostic, disabled by default
+                # convertibledrawer.modeN temperature → pre-set per-mode setpoint,
+                # disabled by default (mode selection alone is sufficient for normal use)
+                _disabled_by_default = "early.temperature" in dom or "convertibledrawer" in _sdev
+                if "early.temperature" in dom:
                     label = "Early Alert Temperature"
                 entities.append(SmartHQTemperatureSetpointSelect(
                     hass=hass, entry=entry, client=client,
