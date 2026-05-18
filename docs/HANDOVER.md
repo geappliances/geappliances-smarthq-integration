@@ -1,123 +1,118 @@
-# SmartHQ Integration — 작업 인수인계 (2026-04-16)
+# SmartHQ Integration — Handover Document (2026-05-07)
 
-> **목적**: 새 대화창에서 이 파일을 읽어 이전 작업 컨텍스트를 즉시 파악하기 위한 핸드오버 문서.
+> **Purpose**: Read this file at the start of a new session to immediately restore the previous work context.
 
 ---
 
-## 1. 프로젝트 목표
+## 1. Project Goals
 
-SmartHQ HA Custom Integration을 **serviceType 기반 아키텍처**로 완전 재작성.
+Complete rewrite of the SmartHQ HA Custom Integration to a **serviceType-based architecture**.
 
-### 핵심 원칙
-- `deviceType` 하드코딩 **없음**
-- `coordinator.data[device_id]["item"]["services"]`의 `serviceType`만으로 entity 자동 생성
-- 새 device 추가 시 integration **reload** 만으로 자동 매핑
-- `make_unique_id(device_id, service_id, suffix)` → `{device_id}_{service_id}_{suffix}` 형식
+### Core Principles
+- No `deviceType` hardcoding
+- Entities auto-generated solely from `serviceType` in `coordinator.data[device_id]["item"]["services"]`
+- Adding a new device only requires an integration **reload** for automatic mapping
+- `make_unique_id(device_id, service_id, suffix)` → `{device_id}_{service_id}_{suffix}` format
 
-### 참조 문서
+### Reference Docs
 - https://docs.smarthq.com/data-model/overview/
 - https://docs.smarthq.com/data-model/common/services/
 
 ---
 
-## 2. 환경 정보
+## 2. Environment
 
-| 항목 | 값 |
+| Item | Value |
 |---|---|
-| Repository | `geappliances/geappliances-smarthq-integration` |
+| Repository | `geappliances/geappliances-smarthq-integration` (Public) |
 | Branch | `main` |
-| HEAD commit | `ee2a7b9` |
-| HA 경로 | `/root/homeassistant/custom_components/smarthq/` |
-| git 저장소 경로 | `/homeassistant/custom_components/smarthq/` (심볼릭 링크, 동일 파일) |
-| HA 환경 | Home Assistant OS on Raspberry Pi 4 (HA 2026.3.4) |
+| HEAD commit | `a73c07d` |
+| HA local path | `/root/homeassistant/custom_components/smarthq/` |
+| Git repo path | `/root/homeassistant/geappliances-smarthq-integration/` |
+| HA environment | Home Assistant OS on Raspberry Pi 4 (HA 2026.3.4) |
+| Git account | `Jaby-Firstbuild <jaebong.lee@geappliances.com>` (globally configured) |
 
-### 유용한 명령어
+### Useful Commands
 ```bash
-# HA Core 재시작
+# Restart HA Core
 ha core restart
 
-# git 작업
-cd /homeassistant/custom_components/smarthq
+# Git operations (run from repo path)
+cd /root/homeassistant/geappliances-smarthq-integration
+echo "Account: $(git config user.name) <$(git config user.email)>"
 git add -A && git commit -m "..." && git push origin main
 ```
 
 ---
 
-## 3. 커밋 히스토리 (최신순)
+## 3. Commit History (latest first)
 
 ```
-ee2a7b9  docs: simplify Initial Setup & Device Discovery diagram
-0cadbf7  docs: update sequence diagrams for service-based architecture
-486459e  docs: update README with service-based entity discovery architecture
-d1e951d  feat: service-based entity architecture (merge from feature/service-based-entities)
-5e0dc71  Fix Smoker Cook Mode display to show pending selection
+a73c07d  chore: add BSD 3-Clause License
+d9694f5  docs: add HACS My HA install button to README
+d304a51  chore: update hacs.json — remove filename field, add render_readme
+5382fcf  refactor: move integration files into custom_components/smarthq/ for HACS compliance
+ad90b14  chore: add brand assets directory at repo root for HACS
+7185d4f  feat(smoker): replace Smoke Level number with select entity (0–5)
+a87e56c  fix(smoker): disable diagnostic-only entities by default
+d2ee157  feat(smoker): rename Warm → Keep Warm / Auto Warm → Keep Warm Time/Temperature
 ```
 
 ---
 
-## 4. 미커밋 변경사항 (작업 중 — 다음 세션에서 이어서 진행)
+## 4. HACS Deployment Status
 
-### 4-1. `sensor.py` — label 동적 생성
+### Completed ✅
+| Item | Status | Notes |
+|---|---|---|
+| Repo structure (`custom_components/smarthq/`) | ✅ | `5382fcf` |
+| `hacs.json` cleanup | ✅ | `render_readme: true`, removed `filename` |
+| `brands/icon.png`, `brands/logo.png` | ✅ | `brands/` directory at repo root |
+| `LICENSE` (BSD 3-Clause) | ✅ | `a73c07d` |
+| `README.md` My HA install button | ✅ | `d9694f5` |
+| GitHub Release `v1.0.0` | ✅ | Published |
+| Repository set to Public | ✅ | Done |
+| HACS Custom Repository registered | ✅ | `geappliances/geappliances-smarthq-integration` |
+| Git account configured | ✅ | `Jaby-Firstbuild <jaebong.lee@geappliances.com>` |
 
-**문제**: Dryer의 `secondsRemaining` entity가 "Cook Time Remaining"으로 표시됨
-- 원인: `_DYN_KEYS`에 하드코딩된 label 사용
+### Remaining ⬜
+| Item | Status | Notes |
+|---|---|---|
+| Verify Download via HACS | ⬜ | Next session |
+| Set GitHub repo Description/Topics | ⬜ | Requires About ⚙️ access |
+| Submit to HACS Default Store | ⬜ | After custom repo verified |
 
-**변경 1: time label 동적 생성**
-- `_DOMAIN_TIME_PREFIX`, `_KEY_TIME_SUFFIX`, `_label_for_time_key()` 추가 (L232~L269)
-- `_DYN_KEYS`의 time 항목 (`cookTimeInitial`, `secondsRemaining`, `secondsElapsed`) label을 `""` 로 변경
-- `_iter_dynamic_sensors()` 내 루프 1, 2 모두에서 `if key in _KEY_TIME_SUFFIX: label = _label_for_time_key(...)` 적용
-- 결과 예시:
-  - Dryer `secondsRemaining` → **"Cycle Time Remaining"**
-  - Smoker `secondsRemaining` → **"Cook Time Remaining"**
-  - Coffee Brewer `secondsRemaining` → **"Brew Time Remaining"**
+### HACS Download Verification Steps (next session)
+```bash
+# 1. Backup local source
+cp -r /root/homeassistant/custom_components/smarthq /root/homeassistant/custom_components/smarthq_backup
 
-**변경 2: firmware entity 기본 미노출**
-- `SmartHQServiceSensor.__init__`에 `enabled_default: bool = True` 파라미터 추가
-- `self._attr_entity_registry_enabled_default = enabled_default` 설정
-- `FIRMWARE_SERVICE` 블록에 `entity_category=EntityCategory.DIAGNOSTIC, enabled_default=False` 적용
+# 2. Remove local source
+rm -rf /root/homeassistant/custom_components/smarthq
 
-**검증 완료 (grep):**
+# 3. Restart HA
+ha core restart
+
+# 4. HACS → SmartHQ → Download → Restart HA
+# 5. Settings → Devices & Services → Add SmartHQ integration
+# 6. Confirm normal operation, then remove backup
+rm -rf /root/homeassistant/custom_components/smarthq_backup
 ```
-L253: def _label_for_time_key(key: str, stype: str, dom: str) -> str:
-L541: enabled_default: bool = True,
-L557: self._attr_entity_registry_enabled_default = enabled_default
-L882: if key in _KEY_TIME_SUFFIX: label = _label_for_time_key(...)
-L926: if key in _KEY_TIME_SUFFIX: label = _label_for_time_key(...)
-L1094: elif stype == FIRMWARE_SERVICE:
-L1106: entity_category=EntityCategory.DIAGNOSTIC,
-L1107: enabled_default=False,
-```
 
-**다음 할 일**:
-- [ ] HA 재시작 + SmartHQ 앱에서 기기 추가 후 label 검증
-- [ ] 검증 완료 후 commit: `fix: dynamic time sensor labels and hide firmware entities by default`
-- [ ] **모든 label 동적 생성** 리팩터링 (사용자 요청 — 아직 미착수)
-  - `_DYN_KEYS`의 나머지 고정 label 제거 (현재 남아 있는 것: `"Preheat Progress"`, `"Signal Strength"`, `"Smoke Level"`, `"Run Status"`, `"Mode"`, `"Value"`, 온도 계열 6개)
-  - `async_setup_entry` coordinator 섹션의 모든 `label_suffix` 하드코딩 제거
-  - label을 `state_key` camelCase → human-readable 변환 함수로 통일
-
-### 4-2. `coordinator.py` — 진단 코드 미정리
-
-아래 코드가 잔존 중 → 정리 필요:
-- `[COORD_SVC_AUDIT]` WARNING loop
-- `/config/*.json` file dump 코드
-- `or True` hack
-- `aiofiles` import
-
-### 4-3. `switch.py`, `sensor.py` — WARNING log 잔존
-
-- `[SWITCH_SETTINGS]` WARNING (switch.py)
-- `[LAUNDRY_SENSOR]` WARNING (sensor.py, L1235)
+### HA brands PR (resolved)
+- PR submitted to `home-assistant/brands` but **auto-closed**
+- Reason: Since HA 2026.3.0, custom integrations use `icon.png` directly from the repo
+- **`custom_components/smarthq/icon.png` (256×256) already included — no further action needed** ✅
 
 ---
 
-## 5. 핵심 파일 구조
+## 5. Key File Structure
 
 ```
-service_registry.py   — 모든 서비스/커맨드 상수 + make_unique_id() + 헬퍼
-coordinator.py        — 1회 full fetch (update_interval=None), services[] 포함
-ws_client.py          — WS 실시간 업데이트 → store (상태 갱신)
-__init__.py           — bootstrap: coordinator → store → ws → platforms
+service_registry.py   — All service/command constants + make_unique_id() + helpers
+coordinator.py        — Single full fetch (update_interval=None), includes services[]
+ws_client.py          — WS real-time updates → store (state refresh)
+__init__.py           — Bootstrap: coordinator → store → ws → platforms
                         PLATFORMS = ["sensor","number","switch","binary_sensor",
                                      "select","button","climate","water_heater",
                                      "light","text"]
@@ -126,15 +121,15 @@ select.py             — mode / cooking.mode.v1 / coffeebrewer / laundry.mode.v
                         / dishwasher.mode.v1 / dishdrawer.mode.legacy
                         / dishwasher.custom.cycle / dishwasher.favorites.v1
                         / flexdispense / stainremoval / remotecycleselection
-sensor.py             — 46개 elif 블록 (temperature/integer/cycletimer/double/
+sensor.py             — 46 elif blocks (temperature/integer/cycletimer/double/
                         string/battery/cooking.state/laundry/dishwasher/dryer/
-                        coffee/espresso/meter/scale/environmental/firmware 등)
-number.py             — temperature(쓰기) / integer(쓰기) / dishdrawer.mode.legacy
+                        coffee/espresso/meter/scale/environmental/firmware, etc.)
+number.py             — temperature(write) / integer(write) / dishdrawer.mode.legacy
 button.py             — trigger / firmware / coffeebrewer / cooking.state /
                         dishdrawer / dishwasher.state.v1 / mixer.v1
-binary_sensor.py      — 21개 elif 블록 (door/filter/firmware/dishwasher/
+binary_sensor.py      — 21 elif blocks (door/filter/firmware/dishwasher/
                         dishdrawer/cooking/demandresponse/pizzaoven/
-                        enhancedfeature/stopwatch 등)
+                        enhancedfeature/stopwatch, etc.)
 climate.py            — thermostat.v1 → SmartHQThermostatClimate
 light.py              — color → SmartHQColorLight
                         cooking.prorange.accent.light → SmartHQAccentLight
@@ -142,29 +137,29 @@ text.py               — string(R/W) → SmartHQStringTextEntity
 water_heater.py       — waterheater.v1 → SmartHQWaterHeater
 ```
 
-### 데이터 흐름
+### Data Flow
 ```
-HA 시작
+HA start
   └─ coordinator.async_config_entry_first_refresh()
        └─ API: GET /v2/device/{id} → coordinator.data[device_id]["item"]["services"]
-  └─ 각 platform async_setup_entry()
-       └─ services[]를 serviceType별로 스캔 → entity 생성
-  └─ ws_client 연결
-       └─ WS 이벤트 → store[device_id]["snapshot"]["services"][service_id] 갱신
-       └─ SIGNAL_DEVICE_UPDATED 발행 → entity.async_write_ha_state()
+  └─ Per-platform async_setup_entry()
+       └─ Scan services[] by serviceType → create entities
+  └─ ws_client connected
+       └─ WS event → update store[device_id]["snapshot"]["services"][service_id]
+       └─ Publish SIGNAL_DEVICE_UPDATED → entity.async_write_ha_state()
 ```
 
-> **중요**: WS 스냅샷의 `services`는 `{ service_id: { state_fields } }` 형태
-> (serviceType 키 없음). entity에서 snapshot 조회 시 service_id로 직접 접근해야 함.
+> **Important**: `services` in the WS snapshot is `{ service_id: { state_fields } }`.
+> There is no `serviceType` key. Always access snapshot using `self._service_id` directly.
 
 ---
 
-## 6. 구현 현황 (74/87 ✅)
+## 6. Implementation Status (74/87 ✅)
 
-| # | serviceType | 플랫폼 | 상태 |
+| # | serviceType | Platform | Status |
 |---|---|---|---|
-| 1 | `assistant` | — | ❌ 스킵 |
-| 2 | `autoreorder` | — | ❌ 스킵 |
+| 1 | `assistant` | — | ❌ Skipped |
+| 2 | `autoreorder` | — | ❌ Skipped |
 | 3 | `battery` | sensor | ✅ |
 | 4 | `brew.mode.v1` | sensor + button | ✅ |
 | 5 | `coffeebrewer.v1` | button + select | ✅ |
@@ -173,8 +168,8 @@ HA 시작
 | 8 | `connect.v1` | binary_sensor | ✅ |
 | 9 | `cooking.advantium` | sensor + binary_sensor + button | ✅ |
 | 10 | `cooking.burner.status.v1` | sensor | ✅ |
-| 11 | `cooking.history` | — | ❌ 스킵 |
-| 12 | `cooking.mode.multistage` | — | ❌ 복잡 |
+| 11 | `cooking.history` | — | ❌ Skipped |
+| 12 | `cooking.mode.multistage` | — | ❌ Complex |
 | 13 | `cooking.mode.v1` | sensor + select + button | ✅ |
 | 14 | `cooking.oven.probe.temperature` | sensor + binary_sensor | ✅ |
 | 15 | `cooking.prorange.accent.light` | light | ✅ |
@@ -217,19 +212,19 @@ HA 시작
 | 52 | `laundry.pricemenu.v1` | sensor + binary_sensor | ✅ |
 | 53 | `laundry.state.v1` | sensor | ✅ |
 | 54 | `laundry.toggle.v2` | switch | ✅ |
-| 55 | `matter.v1` | — | ❌ 스킵 |
+| 55 | `matter.v1` | — | ❌ Skipped |
 | 56 | `meter` | sensor | ✅ |
 | 57 | `mixer.v1` | sensor + button | ✅ |
 | 58 | `mode` | select + switch | ✅ |
 | 59 | `outdoorunit.info` | sensor | ✅ |
 | 60 | `oven.flextimer` | sensor | ✅ |
 | 61 | `oven.menutree` | sensor | ✅ |
-| 62 | `photovoltaicpanel` | — | ❌ 스킵 |
+| 62 | `photovoltaicpanel` | — | ❌ Skipped |
 | 63 | `pizzaoven.reminders` | binary_sensor | ✅ |
 | 64 | `pizzaoven.state` | sensor + binary_sensor | ✅ |
 | 65 | `power.usage` | sensor | ✅ |
-| 66 | `pricingstructure` | — | ❌ 복잡 |
-| 67 | `provider` | — | ❌ 스킵 |
+| 66 | `pricingstructure` | — | ❌ Complex |
+| 67 | `provider` | — | ❌ Skipped |
 | 68 | `remotecycleselection` | binary_sensor + select | ✅ |
 | 69 | `scale.v1` | sensor | ✅ |
 | 70 | `smartdispense` | sensor | ✅ |
@@ -239,93 +234,85 @@ HA 시작
 | 74 | `string` | sensor(R/O) + text(R/W) | ✅ |
 | 75 | `temperature` | sensor + number | ✅ |
 | 76 | `thermostat.v1` | climate | ✅ |
-| 77 | `timeintervals.v1` | — | ❌ 복잡 |
-| 78 | `timeofday.v1` | — | ❌ 복잡 |
-| 79 | `timeofuse.v1` | — | ❌ 복잡 |
+| 77 | `timeintervals.v1` | — | ❌ Complex |
+| 78 | `timeofday.v1` | — | ❌ Complex |
+| 79 | `timeofuse.v1` | — | ❌ Complex |
 | 80 | `toggle` | switch | ✅ |
 | 81 | `trigger` | button | ✅ |
-| 82 | `video.stream` | — | ❌ 스킵 |
+| 82 | `video.stream` | — | ❌ Skipped |
 | 83 | `volume.liquid.v1` | sensor | ✅ |
 | 84 | `washer.config.cycle.v1` | sensor | ✅ |
 | 85 | `washer.mycycle` | sensor | ✅ |
-| 86 | `water.energy.estimates` | — | ❌ 스킵 |
+| 86 | `water.energy.estimates` | — | ❌ Skipped |
 | 87 | `waterheater.v1` | water_heater | ✅ |
 
-**미구현 13개**
-- 🔴 스킵 권장 (9개): `assistant`, `autoreorder`, `cooking.history`, `matter.v1`, `photovoltaicpanel`, `provider`, `video.stream`, `water.energy.estimates`, `pricingstructure`
-- 🟡 복잡 (4개): `cooking.mode.multistage`, `timeintervals.v1`, `timeofday.v1`, `timeofuse.v1`
+**13 not implemented**
+- 🔴 Recommended to skip (9): `assistant`, `autoreorder`, `cooking.history`, `matter.v1`, `photovoltaicpanel`, `provider`, `video.stream`, `water.energy.estimates`, `pricingstructure`
+- 🟡 Complex (4): `cooking.mode.multistage`, `timeintervals.v1`, `timeofday.v1`, `timeofuse.v1`
 
 ---
 
-## 7. 버그 수정 이력
+## 7. Bug Fix History
 
-### fix: Smoker Cavity Light 엔티티 중복 생성 (`switch.py`, `a53e282`)
-- **원인**: `mode` + `cloud.smarthq.domain.brightness` 서비스가 `serviceDeviceType`이
-  다른 2개의 인스턴스로 등록됨 → `SmartHQModeSwitch` 2개 생성
-- **수정**: `async_setup_entry`에 `seen_switch_domains: set[tuple]` 추가,
-  동일 `(serviceType, domainType)` 쌍 중복 skip
+### fix: Smoker Cavity Light duplicate entity creation (`switch.py`, `a53e282`)
+- **Cause**: The `mode` + `cloud.smarthq.domain.brightness` service was registered as two instances
+  with different `serviceDeviceType` values → two `SmartHQModeSwitch` entities created
+- **Fix**: Added `seen_switch_domains: set[tuple]` to `async_setup_entry`; duplicate
+  `(serviceType, domainType)` pairs are now skipped
 
-### fix: Smoker Cook Mode unavailable 문제 (`select.py`, `d30a56e`)
-- **원인**: `SmartHQCookingModeSelect.available`이 WS 스냅샷에서 `serviceType` 키로
-  조회 → WS 스냅샷은 `service_id` 키 구조라 항상 miss → 기기 OFF 시 `return False`
-- **수정**: `available`을 `return bool(self._cooking_svcs)`로 단순화.
-  기기 ON/OFF 무관 항상 활성화
-
----
-
-## 8. 알려진 구조적 주의사항
-
-1. **WS 스냅샷 키 구조**: `snap["services"]`는 `{ service_id: {state_fields} }` 형태.
-   `serviceType` 키 없음. snapshot 조회 시 반드시 `self._service_id`로 직접 접근.
-
-2. **중복 서비스 인스턴스**: Smoker 등 일부 기기는 동일 serviceType+domainType 서비스가
-   serviceDeviceType만 다르게 2개 등록됨. platform setup 시 dedup 처리 필요.
-
-3. **cooking.mode.v1 / laundry.mode.v1 집계**: 기기당 여러 domain 서비스를
-   하나의 select로 aggregation. `cooking_mode_svcs`, `laundry_mode_svcs` 리스트로
-   수집 후 루프 밖에서 1개 엔티티 생성.
+### fix: Smoker Cook Mode unavailable issue (`select.py`, `d30a56e`)
+- **Cause**: `SmartHQCookingModeSelect.available` looked up the WS snapshot using `serviceType` key
+  → WS snapshot uses `service_id` keys, so always a miss → returned `False` when device was off
+- **Fix**: Simplified `available` to `return bool(self._cooking_svcs)`;
+  always enabled regardless of device on/off state
 
 ---
 
-## 9. 실제 보유 기기 (테스트 환경)
+## 8. Known Structural Notes
 
-| 기기 | Model | 비고 |
+1. **WS snapshot key structure**: `snap["services"]` is `{ service_id: {state_fields} }`.
+   No `serviceType` key. Always access snapshot using `self._service_id` directly.
+
+2. **Duplicate service instances**: Some devices (e.g. Smoker) register the same serviceType+domainType
+   service twice with different `serviceDeviceType` values. Deduplication is required during platform setup.
+
+3. **cooking.mode.v1 / laundry.mode.v1 aggregation**: Multiple domain services per device are
+   aggregated into a single select. Collected into `cooking_mode_svcs` / `laundry_mode_svcs` lists,
+   then one entity is created outside the loop.
+
+---
+
+## 9. Devices Available for Testing
+
+| Device | Model | Notes |
 |---|---|---|
 | Coffee Brewer | C7CGAAS00000 | — |
 | Dryer | UNKNOWNMODEL01 | — |
-| Smoker | P9SBAAS6VBB | Cavity Light 중복 수정 완료, Cook Mode 항상 활성화 |
+| Smoker | P9SBAAS6VBB | Cavity Light dedup fixed, Cook Mode always enabled |
 | Toaster Oven | P9OIAAS6TBB | — |
 
 ---
 
-## 10. 다음 세션 시작 방법
+## 10. How to Start the Next Session
 
-새 대화창에서:
-1. 이 파일 첨부 또는 경로 언급: `/root/homeassistant/custom_components/smarthq/docs/HANDOVER.md`
-2. 원하는 작업 요청
+In a new chat:
+1. Attach this file or reference its path: `/root/homeassistant/custom_components/smarthq/docs/HANDOVER.md`
+2. State the desired task
 
-### 즉시 해야 할 우선순위 작업
+### Prioritized Next Steps
 
-1. **HA 재시작 + 기기 추가 후 검증** (미착수)
-   - `ha core restart`
-   - SmartHQ 앱에서 기기 재추가
-   - Dryer `secondsRemaining` → "Cycle Time Remaining" 확인
-   - Firmware entity 기본 미노출 확인
+1. **HACS Download Verification** (highest priority)
+   - Backup local source → remove → restart HA
+   - HACS → SmartHQ → Download → restart HA
+   - Add SmartHQ integration → confirm devices work normally
+   - See section 4 for detailed steps
 
-2. **commit** (검증 후)
-   ```bash
-   git add -A && git commit -m "fix: dynamic time sensor labels and hide firmware entities by default"
-   git push origin main
-   ```
+2. **Set GitHub Repo Description/Topics**
+   - `https://github.com/geappliances/geappliances-smarthq-integration` → About ⚙️
+   - Description: `Home Assistant custom integration for GE Appliances SmartHQ connected devices`
+   - Topics: `home-assistant`, `hacs`, `hacs-integration`, `smarthq`, `ge-appliances`
 
-3. **sensor.py 모든 label 동적 생성** (사용자 요청, 미착수)
-   - 현재 `_DYN_KEYS`에 남아 있는 고정 label 제거
-   - `async_setup_entry` coordinator 섹션의 `label_suffix` 하드코딩 전부 제거
-   - camelCase key → human-readable 변환 함수(`_label_for_key()`) 도입
-
-4. **coordinator.py 진단 코드 정리** (낮은 우선순위)
-   - `or True` hack, file dump, `[COORD_SVC_AUDIT]` WARNING, `aiofiles` import 제거
-
-5. **WARNING log 정리** (낮은 우선순위)
-   - `[SWITCH_SETTINGS]` in switch.py
-   - `[LAUNDRY_SENSOR]` in sensor.py
+3. **Submit to HACS Default Store** (after custom repo verified)
+   - Fork `https://github.com/hacs/default`
+   - Add `geappliances/geappliances-smarthq-integration` to the `integration` file
+   - PR title: `Add SmartHQ integration`
