@@ -177,16 +177,18 @@ async def async_setup_entry(hass, entry, async_add_entities):
             # ── trigger → button ────────────────────────────────────
             if stype == TRIGGER_SERVICE:
                 label = dom.split(".")[-1].replace("_", " ").title() if dom else "Trigger"
-                # Factory reset and restore-defaults are diagnostic/dangerous;
-                # disable by default so they don't appear in the main UI.
-                _disabled_by_default = any(
+                # Factory reset and restore-defaults are dangerous operations
+                # that should never be exposed in HA UI. Block entirely.
+                _is_dangerous = any(
                     kw in dom for kw in ("factory", "restore")
                 )
+                if _is_dangerous:
+                    _LOGGER.debug("[BUTTON] Blocking dangerous trigger domain=%s", dom)
+                    continue
                 entities.append(SmartHQTriggerButton(
                     hass=hass, entry=entry, client=client,
                     device_id=device_id, service_id=service_id,
                     dev_name=dev_name, label=label, svc=svc,
-                    disabled_by_default=_disabled_by_default,
                     unique_id=make_unique_id(device_id, service_id, "trigger"),
                 ))
 
@@ -299,13 +301,12 @@ class SmartHQTriggerButton(_SmartHQButtonBase):
     _attr_icon = "mdi:gesture-tap-button"
 
     def __init__(self, hass, entry, client, device_id, service_id,
-                 dev_name, label, svc, unique_id, disabled_by_default=False):
+                 dev_name, label, svc, unique_id):
         super().__init__(hass, entry, device_id, dev_name, unique_id)
         self._client = client
         self._service_id = service_id
         self._svc = svc  # full service dict for async_send_service_command
         self._attr_name = f"{dev_name} {label}"
-        self._attr_entity_registry_enabled_default = not disabled_by_default
 
     def _device_presence(self) -> str:
         """Return device presence status string (e.g. 'ONLINE', 'OFFLINE')."""
