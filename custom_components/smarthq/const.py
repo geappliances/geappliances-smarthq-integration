@@ -45,6 +45,38 @@ DEFAULT_OPTIONS = {
 }
 
 # ---------------------------------------------------------------------------
+# LLM tools / messaging control
+# ---------------------------------------------------------------------------
+# Identifier of the custom LLM API this integration registers with HA.
+LLM_API_ID = "smarthq"
+LLM_API_NAME = "SmartHQ Appliances"
+
+# HA entity domains that must never be exposed to LLM-driven control through
+# this integration's tools. Defense-in-depth: even if a user exposes these to
+# Assist, the SmartHQ tools refuse to act on them.
+LLM_BLOCKED_DOMAINS: frozenset[str] = frozenset(
+    {
+        "lock",
+        "alarm_control_panel",
+        "camera",
+    }
+)
+
+# Appliance state values that are considered safety-sensitive. Any tool action
+# that would start/modify these requires an explicit second confirmation.
+LLM_DANGEROUS_KEYWORDS: tuple[str, ...] = (
+    "oven",
+    "cooktop",
+    "range",
+    "burner",
+    "broil",
+    "bake",
+    "cook",
+    "smoker",
+    "advantium",
+)
+
+# ---------------------------------------------------------------------------
 # serviceDeviceType → human-readable component prefix
 # ---------------------------------------------------------------------------
 # Maps the last segment of a serviceDeviceType value to a display prefix.

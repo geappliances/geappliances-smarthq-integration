@@ -411,6 +411,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.services.async_register(DOMAIN, "set_cavity_light_mode", _async_set_cavity_light_mode)
 
+    # Register the SmartHQ LLM API once per HA instance (shared across entries).
+    root = hass.data.setdefault(DOMAIN, {})
+    if not root.get("_llm_unregister"):
+        try:
+            from homeassistant.helpers import llm  # Lazy import
+            from .llm_api import SmartHQLLMAPI  # Lazy import
+
+            root["_llm_unregister"] = llm.async_register_api(
+                hass, SmartHQLLMAPI(hass)
+            )
+            _LOGGER.info("[INIT] Registered SmartHQ LLM API")
+        except Exception as err:  # noqa: BLE001 - LLM API is optional
+            _LOGGER.warning("[INIT] SmartHQ LLM API registration skipped: %s", err)
+
     # Load platforms
     _LOGGER.info("[INIT] Loading platforms: %s", PLATFORMS)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -441,5 +455,20 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await _ws_close(ws)
     except Exception as e:
         _LOGGER.debug("WebSocket close error: %s", e)
+
+    # Unregister the LLM API once the last SmartHQ entry is removed.
+    root = hass.data.get(DOMAIN, {})
+    remaining_entries = [
+        v for v in root.values() if isinstance(v, dict) and "store" in v
+    ]
+    if not remaining_entries:
+        unregister = root.pop("_llm_unregister", None)
+        if callable(unregister):
+            try:
+                unregister()
+                _LOGGER.info("[UNLOAD] Unregistered SmartHQ LLM API")
+            except Exception as e:  # noqa: BLE001
+                _LOGGER.debug("LLM API unregister error: %s", e)
+        root.pop("_llm_confirmations", None)
 
     return ok
