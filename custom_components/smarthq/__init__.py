@@ -430,8 +430,66 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     _LOGGER.info("[INIT] Platforms loaded successfully")
 
+    # Assistant convenience layer (entity exposure + optional Telegram bridge).
+    await _async_setup_messaging(hass, entry, bucket)
+
+    # Reload this entry whenever its options change so the messaging layer
+    # reflects the new settings.
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+
     _LOGGER.info("SmartHQ setup complete (devices=%d)", len(store))
     return True
+
+
+async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload the entry when its options change."""
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def _async_setup_messaging(
+    hass: HomeAssistant, entry: ConfigEntry, bucket: Dict[str, Any]
+) -> None:
+    """Apply the opt-in assistant conveniences based on entry options."""
+    from .const import (
+        DEFAULT_OPTIONS,
+        OPTION_AUTO_EXPOSE,
+        OPTION_CONVERSATION_AGENT,
+        OPTION_ENABLE_TELEGRAM,
+        OPTION_TELEGRAM_CHAT_IDS,
+    )
+    from .llm_messaging import (
+        SmartHQTelegramBridge,
+        async_expose_entry_entities,
+        _parse_chat_ids,
+    )
+
+    opts = {**DEFAULT_OPTIONS, **(entry.options or {})}
+
+    # 1. Expose this entry's appliance entities to Assist (default on).
+    if opts.get(OPTION_AUTO_EXPOSE):
+        try:
+            async_expose_entry_entities(hass, entry.entry_id)
+        except Exception as err:  # noqa: BLE001 - convenience only
+            _LOGGER.warning("[INIT] Entity exposure skipped: %s", err)
+
+    # 2. Telegram bridge (opt-in; needs a conversation agent).
+    agent_id = (opts.get(OPTION_CONVERSATION_AGENT) or "").strip()
+    if opts.get(OPTION_ENABLE_TELEGRAM) and agent_id:
+        try:
+            bridge = SmartHQTelegramBridge(
+                hass,
+                agent_id,
+                _parse_chat_ids(opts.get(OPTION_TELEGRAM_CHAT_IDS) or ""),
+            )
+            bridge.async_start()
+            bucket["telegram_bridge"] = bridge
+        except Exception as err:  # noqa: BLE001 - convenience only
+            _LOGGER.warning("[INIT] Telegram bridge setup failed: %s", err)
+    elif opts.get(OPTION_ENABLE_TELEGRAM) and not agent_id:
+        _LOGGER.warning(
+            "[INIT] Telegram bridge enabled but no conversation agent "
+            "selected; skipping. Set one in the SmartHQ integration options."
+        )
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload entry and clean up resources."""
@@ -439,6 +497,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     data = hass.data.get(DOMAIN, {}).pop(entry.entry_id, {})
     
+    # Stop the Telegram bridge if it was running.
+    bridge = data.get("telegram_bridge")
+    if bridge is not None:
+        try:
+            bridge.async_stop()
+        except Exception as e:  # noqa: BLE001
+            _LOGGER.debug("Telegram bridge stop error: %s", e)
+
     # Cancel settings polling task
     polling_task = data.get("settings_polling_task")
     if polling_task and not polling_task.done():

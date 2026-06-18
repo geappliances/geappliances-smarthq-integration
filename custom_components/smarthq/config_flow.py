@@ -7,12 +7,16 @@ from typing import Any, Dict
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResult
-from homeassistant.helpers import config_entry_oauth2_flow
+from homeassistant.helpers import config_entry_oauth2_flow, selector
 
 from .const import (
     DOMAIN,
     DEFAULT_OPTIONS,
     OPTION_SHOW_ALT_TEMPS,
+    OPTION_AUTO_EXPOSE,
+    OPTION_ENABLE_TELEGRAM,
+    OPTION_CONVERSATION_AGENT,
+    OPTION_TELEGRAM_CHAT_IDS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -30,6 +34,14 @@ class OAuth2FlowHandler(
     def logger(self) -> logging.Logger:
         """Logger required by AbstractOAuth2FlowHandler."""
         return _LOGGER
+
+    @staticmethod
+    @config_entries.callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> "SmartHQOptionsFlowHandler":
+        """Return the options flow handler."""
+        return SmartHQOptionsFlowHandler(config_entry)
 
     async def async_step_pick_implementation(
         self, user_input: dict[str, Any] | None = None
@@ -66,20 +78,43 @@ class SmartHQOptionsFlowHandler(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input: Dict[str, Any] | None = None) -> FlowResult:
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            # Normalize the optional agent selector (absent => empty string).
+            data = dict(user_input)
+            data.setdefault(OPTION_CONVERSATION_AGENT, "")
+            return self.async_create_entry(title="", data=data)
 
         opts = {**DEFAULT_OPTIONS, **(self.entry.options or {})}
-        schema = vol.Schema(
-            {
-                vol.Optional(
-                    OPTION_SHOW_ALT_TEMPS,
-                    default=opts[OPTION_SHOW_ALT_TEMPS],
-                ): bool,
-            }
+        schema_dict: Dict[Any, Any] = {
+            vol.Optional(
+                OPTION_SHOW_ALT_TEMPS,
+                default=opts[OPTION_SHOW_ALT_TEMPS],
+            ): bool,
+            vol.Optional(
+                OPTION_AUTO_EXPOSE,
+                default=opts[OPTION_AUTO_EXPOSE],
+            ): bool,
+            vol.Optional(
+                OPTION_ENABLE_TELEGRAM,
+                default=opts[OPTION_ENABLE_TELEGRAM],
+            ): bool,
+        }
+        # The conversation-agent selector is optional; default only if set.
+        agent_default = opts.get(OPTION_CONVERSATION_AGENT) or ""
+        agent_key = (
+            vol.Optional(OPTION_CONVERSATION_AGENT, default=agent_default)
+            if agent_default
+            else vol.Optional(OPTION_CONVERSATION_AGENT)
         )
-        return self.async_show_form(step_id="init", data_schema=schema)
+        schema_dict[agent_key] = selector.EntitySelector(
+            selector.EntitySelectorConfig(domain="conversation")
+        )
+        schema_dict[
+            vol.Optional(
+                OPTION_TELEGRAM_CHAT_IDS,
+                default=opts[OPTION_TELEGRAM_CHAT_IDS],
+            )
+        ] = str
 
-
-async def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> SmartHQOptionsFlowHandler:
-    """Return the options flow handler."""
-    return SmartHQOptionsFlowHandler(config_entry)
+        return self.async_show_form(
+            step_id="init", data_schema=vol.Schema(schema_dict)
+        )

@@ -40,8 +40,19 @@ WS_BACKOFF_MAX        = 60  # Maximum backoff for reconnection
 
 # ---- Options ----
 OPTION_SHOW_ALT_TEMPS = "show_alt_temperature_units"  # Show alternative temperature units
+
+# Assistant / messaging options (opt-in convenience features).
+OPTION_AUTO_EXPOSE = "auto_expose_entities"  # Expose SmartHQ entities to Assist
+OPTION_ENABLE_TELEGRAM = "enable_telegram_bridge"  # Telegram -> conversation bridge
+OPTION_CONVERSATION_AGENT = "conversation_agent"  # conversation.* agent entity_id
+OPTION_TELEGRAM_CHAT_IDS = "telegram_allowed_chat_ids"  # comma-separated chat ids
+
 DEFAULT_OPTIONS = {
     OPTION_SHOW_ALT_TEMPS: False,  # Default: show system units only
+    OPTION_AUTO_EXPOSE: True,  # Convenience: expose appliances to Assist by default
+    OPTION_ENABLE_TELEGRAM: False,  # Telegram bridge is opt-in (needs a bot + agent)
+    OPTION_CONVERSATION_AGENT: "",  # Empty until the user selects an agent
+    OPTION_TELEGRAM_CHAT_IDS: "",  # Empty until the user lists allowed chat ids
 }
 
 # ---------------------------------------------------------------------------
