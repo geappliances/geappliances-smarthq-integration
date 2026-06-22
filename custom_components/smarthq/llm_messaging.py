@@ -17,12 +17,12 @@ the rest of the integration keeps working.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from typing import Callable
 
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 
-from .const import DOMAIN, LLM_API_ID
+from .const import LLM_API_ID
 
 _LOGGER = logging.getLogger(__name__)
 
