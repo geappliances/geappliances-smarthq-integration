@@ -460,6 +460,7 @@ async def _async_setup_messaging(
     from .llm_messaging import (
         SmartHQTelegramBridge,
         async_expose_entry_entities,
+        async_enable_smarthq_api_on_agent,
         _parse_chat_ids,
     )
 
@@ -472,8 +473,16 @@ async def _async_setup_messaging(
         except Exception as err:  # noqa: BLE001 - convenience only
             _LOGGER.warning("[INIT] Entity exposure skipped: %s", err)
 
-    # 2. Telegram bridge (opt-in; needs a conversation agent).
+    # 2. If an agent is selected, make sure the SmartHQ LLM API is enabled on
+    #    it so appliance control works without a manual toggle.
     agent_id = (opts.get(OPTION_CONVERSATION_AGENT) or "").strip()
+    if agent_id:
+        try:
+            async_enable_smarthq_api_on_agent(hass, agent_id)
+        except Exception as err:  # noqa: BLE001 - convenience only
+            _LOGGER.warning("[INIT] Could not auto-enable SmartHQ API: %s", err)
+
+    # 3. Telegram bridge (opt-in; needs a conversation agent).
     if opts.get(OPTION_ENABLE_TELEGRAM) and agent_id:
         try:
             bridge = SmartHQTelegramBridge(
