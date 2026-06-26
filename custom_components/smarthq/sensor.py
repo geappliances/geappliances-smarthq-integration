@@ -837,6 +837,21 @@ class SmartHQMeterSensor(SmartHQServiceSensor):
         )
 
     @property
+    def native_value(self):
+        st = self._get_state()
+        raw = st.get(self._state_key)
+        if raw is None:
+            return None
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            return raw
+        # API reports energy in Wh; convert to kWh when that is the unit
+        if self._attr_native_unit_of_measurement == UnitOfEnergy.KILO_WATT_HOUR:
+            return round(val / 1000, 3)
+        return val
+
+    @property
     def extra_state_attributes(self) -> dict:
         st = self._get_state()
         return {
