@@ -10,5 +10,24 @@
     "abort": {
       "single_instance_allowed": "Only a single instance is allowed."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "SmartHQ options",
+        "description": "Configure display and assistant conveniences. The Telegram bridge and conversation agent are optional and only used if you enable them.",
+        "data": {
+          "show_alt_temperature_units": "Show alternative temperature units",
+          "auto_expose_entities": "Expose appliances to Assist (voice/text control)",
+          "enable_telegram_bridge": "Enable Telegram control",
+          "conversation_agent": "Conversation agent (for Telegram)",
+          "telegram_allowed_chat_ids": "Allowed Telegram chat IDs (comma separated)"
+        },
+        "data_description": {
+          "conversation_agent": "Select the conversation agent that has the SmartHQ LLM API enabled. Required for the Telegram bridge.",
+          "telegram_allowed_chat_ids": "Only these Telegram chat IDs may control your appliances. Leave blank to rely solely on the Telegram bot's own allow-list."
+        }
+      }
+    }
   }
 }
