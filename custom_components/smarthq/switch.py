@@ -193,7 +193,6 @@ async def async_setup_entry(hass, entry, async_add_entities):
         # coordinator.data[did]["info"] is set directly by coordinator._async_update_data
         info = device_item.get("info") or {}
         dev_name = info.get("nickname") or info.get("name") or DEFAULT_NAME
-        _LOGGER.warning("[SWITCH_SETTINGS] device=%s settings_count=%d", device_id[:8], len(settings_list))
         for setting in settings_list:
             if not isinstance(setting, dict):
                 continue
