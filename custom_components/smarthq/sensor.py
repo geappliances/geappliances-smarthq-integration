@@ -553,13 +553,19 @@ class SmartHQSnapshotSensor(SensorEntity):
 # ---------------------------------------------------------------------------
 
 def _integer_units_to_ha(int_units: str) -> tuple:
-    """Map INTEGER_UNITS string to (ha_unit, SensorDeviceClass | None)."""
+    """Map INTEGER_UNITS string to (ha_unit, SensorDeviceClass | None).
+
+    The API sends full URIs (e.g. "cloud.smarthq.type.integerunits.percentage");
+    extract the tail token before lookup.
+    """
+    # Extract tail token from full URI (e.g. "cloud.smarthq.type.integerunits.kwh" → "kwh")
+    key = int_units.split(".")[-1] if int_units else ""
     _map = {
         "percentage":           (PERCENTAGE, SensorDeviceClass.BATTERY),
         "kwh":                  (UnitOfEnergy.KILO_WATT_HOUR, SensorDeviceClass.ENERGY),
         "watts":                (UnitOfPower.WATT, SensorDeviceClass.POWER),
         "dbm":                  ("dBm", SensorDeviceClass.SIGNAL_STRENGTH),
-        "temperature.fahrenheit": (UnitOfTemperature.FAHRENHEIT, SensorDeviceClass.TEMPERATURE),
+        "fahrenheit":           (UnitOfTemperature.FAHRENHEIT, SensorDeviceClass.TEMPERATURE),
         "rpm":                  ("rpm", None),
         "cfm":                  ("ft³/min", None),
         "minutes":              ("min", None),
@@ -570,13 +576,24 @@ def _integer_units_to_ha(int_units: str) -> tuple:
         "level":                (None, None),
         "unitless":             (None, None),
     }
-    return _map.get(int_units, (None, None))
+    return _map.get(key, (None, None))
 
 
 def _meter_units_to_ha(meter_units: str, dom: str) -> tuple:
-    """Map METER_UNITS string (+ domainType fallback) to (ha_unit, SensorDeviceClass)."""
+    """Map METER_UNITS string (+ domainType fallback) to (ha_unit, SensorDeviceClass).
+
+    The API sends full URIs (e.g. "cloud.smarthq.type.meterunits.kwh"); extract
+    the tail token before lookup.
+
+    NOTE: Despite the "kwh" label in meterUnits, the SmartHQ API sends energy
+    meterValue in Wh (watt-hours). We therefore map energy units to
+    UnitOfEnergy.WATT_HOUR so HA displays the correct value.
+    """
+    # Extract tail token from full URI (e.g. "cloud.smarthq.type.meterunits.kwh" → "kwh")
+    key = meter_units.split(".")[-1] if meter_units else ""
     _map = {
-        "kwh":        (UnitOfEnergy.KILO_WATT_HOUR, SensorDeviceClass.ENERGY),
+        # Energy: API label says kWh but actual meterValue is in Wh
+        "kwh":        (UnitOfEnergy.WATT_HOUR, SensorDeviceClass.ENERGY),
         "kw":         (UnitOfPower.KILO_WATT, SensorDeviceClass.POWER),
         "volts":      (UnitOfElectricPotential.VOLT, SensorDeviceClass.VOLTAGE),
         "amps":       (UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT),
@@ -584,8 +601,8 @@ def _meter_units_to_ha(meter_units: str, dom: str) -> tuple:
         "milileters": (UnitOfVolume.MILLILITERS, SensorDeviceClass.WATER),
         "cubicfeet":  (UnitOfVolume.CUBIC_FEET, SensorDeviceClass.WATER),
     }
-    if meter_units in _map:
-        return _map[meter_units]
+    if key in _map:
+        return _map[key]
     # Fallback via domain
     if dom in METER_DOMAIN_UNIT_CLASS:
         unit_str, cls_str = METER_DOMAIN_UNIT_CLASS[dom]

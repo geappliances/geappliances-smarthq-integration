@@ -187,8 +187,10 @@ ENVIRONMENTAL_DOMAIN_DEVICE_CLASS: dict[str, str] = {
 }
 
 # meter domainType → (HA unit, HA SensorDeviceClass)
+# NOTE: SmartHQ API sends energy meterValue in Wh despite the meterUnits label
+# saying "kwh". Use Wh as the HA unit so the displayed value is correct.
 METER_DOMAIN_UNIT_CLASS: dict[str, tuple[str, str]] = {
-    "cloud.smarthq.domain.energy": ("kWh", "energy"),
+    "cloud.smarthq.domain.energy": ("Wh", "energy"),
     "cloud.smarthq.domain.voltage": ("V", "voltage"),
     "cloud.smarthq.domain.water.cold": ("L", "water"),
     "cloud.smarthq.domain.water.hot": ("L", "water"),
