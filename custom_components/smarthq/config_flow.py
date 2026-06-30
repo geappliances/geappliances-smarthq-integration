@@ -6,6 +6,7 @@ from typing import Any, Dict
 
 import voluptuous as vol
 from homeassistant import config_entries
+from homeassistant.config_entries import SOURCE_REAUTH
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import config_entry_oauth2_flow, selector
 
@@ -43,30 +44,28 @@ class OAuth2FlowHandler(
         """Return the options flow handler."""
         return SmartHQOptionsFlowHandler(config_entry)
 
-    async def async_step_pick_implementation(
+    async def async_step_reauth(
+        self, entry_data: dict[str, Any]
+    ) -> FlowResult:
+        """Trigger re-authentication when the token is invalid or expired."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle implementation picker - auto-select if existing auth exists."""
-        implementations = await config_entry_oauth2_flow.async_get_implementations(
-            self.hass, self.DOMAIN
-        )
-        
-        # Auto-select if existing auth is available
-        if len(implementations) > 1:
-            # Skip "local" (Local application credentials) and use existing auth
-            for impl_id, impl in implementations.items():
-                if impl_id != "local":  # Skip local credentials
-                    _LOGGER.debug(f"Auto-selecting existing auth: {impl_id}")
-                    return await self.async_step_auth(
-                        user_input={"implementation": impl_id}
-                    )
-        
-        # Show picker if no existing auth
-        return await super().async_step_pick_implementation(user_input)
+        """Show confirmation dialog before re-launching the OAuth flow."""
+        if user_input is None:
+            return self.async_show_form(step_id="reauth_confirm")
+        return await self.async_step_user()
 
     async def async_oauth_create_entry(self, data: dict) -> FlowResult:
-        """Create the config entry after OAuth finishes."""
-        # Include initial options
+        """Create or update the config entry after OAuth finishes."""
+        if self.source == SOURCE_REAUTH:
+            # Update the existing entry with the new tokens and reload.
+            return self.async_update_reload_and_abort(
+                self._get_reauth_entry(),
+                data_updates=data,
+            )
         return self.async_create_entry(title="SmartHQ", data=data, options=DEFAULT_OPTIONS)
 
 

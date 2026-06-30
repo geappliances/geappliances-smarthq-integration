@@ -5,10 +5,15 @@
       "pick_implementation": {
         "title": "Link your SmartHQ account",
         "description": "Click the **Link** button below to go to the SmartHQ login page and authorize Home Assistant."
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate SmartHQ",
+        "description": "Your SmartHQ session has expired. Click **Submit** to sign in again and restore the connection."
       }
     },
     "abort": {
-      "single_instance_allowed": "This integration can only be added once."
+      "single_instance_allowed": "This integration can only be added once.",
+      "reauth_successful": "Re-authentication was successful."
     }
   },
   "options": {

@@ -4,6 +4,7 @@ import logging
 from typing import Any, Dict
 
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DOMAIN
@@ -11,6 +12,14 @@ from .api import SmartHQApi
 from .service_registry import get_device_services, get_services_by_type  # noqa: F401
 
 _LOGGER = logging.getLogger(__name__)
+
+_AUTH_ERROR_CODES = ("401", "403", "invalid_grant", "invalid_token", "unauthorized")
+
+
+def _is_auth_error(err: Exception) -> bool:
+    """Return True if the exception indicates an authentication failure."""
+    msg = str(err).lower()
+    return any(code in msg for code in _AUTH_ERROR_CODES)
 
 
 class SmartHQCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
@@ -30,6 +39,8 @@ class SmartHQCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         try:
             devices = await self.api.async_list_devices()
         except Exception as err:
+            if _is_auth_error(err):
+                raise ConfigEntryAuthFailed(f"Authentication failed: {err}") from err
             _LOGGER.error("Failed to list devices: %s", err)
             raise UpdateFailed(f"Failed to list devices: {err}")
 
