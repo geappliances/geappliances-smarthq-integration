@@ -15,7 +15,7 @@
     "step": {
       "init": {
         "title": "SmartHQ options",
-        "description": "Configure display and assistant conveniences. The Telegram bridge and conversation agent are optional and only used if you enable them.",
+        "description": "Configure display and assistant conveniences. The Telegram bridge and conversation agent are optional and only used if you enable them.\n\n{setup_status}",
         "data": {
           "show_alt_temperature_units": "Show alternative temperature units",
           "auto_expose_entities": "Expose appliances to Assist (voice/text control)",
@@ -24,7 +24,7 @@
           "telegram_allowed_chat_ids": "Allowed Telegram chat IDs (comma separated)"
         },
         "data_description": {
-          "conversation_agent": "Select the conversation agent that has the SmartHQ LLM API enabled. Required for the Telegram bridge.",
+          "conversation_agent": "Pick the conversation agent to use. SmartHQ will automatically enable its appliance tools on that agent, so you don't have to toggle it in the agent's own settings.",
           "telegram_allowed_chat_ids": "Only these Telegram chat IDs may control your appliances. Leave blank to rely solely on the Telegram bot's own allow-list."
         }
       }

@@ -22,7 +22,7 @@ from typing import Any, Callable
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 
-from .const import DOMAIN
+from .const import DOMAIN, LLM_API_ID
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -73,6 +73,66 @@ def _parse_chat_ids(raw: str) -> set[int]:
         except ValueError:
             _LOGGER.warning("[MSG] Ignoring invalid Telegram chat id: %r", token)
     return ids
+
+
+def async_list_conversation_agents(hass: HomeAssistant) -> list[str]:
+    """Return the entity_ids of all conversation agents currently registered."""
+    ent_reg = er.async_get(hass)
+    return sorted(
+        ent.entity_id
+        for ent in ent_reg.entities.values()
+        if ent.domain == "conversation"
+    )
+
+
+def async_enable_smarthq_api_on_agent(
+    hass: HomeAssistant, agent_entity_id: str
+) -> bool:
+    """Best-effort: enable the SmartHQ LLM API on the chosen conversation agent.
+
+    Resolves the agent entity to its config entry/subentry and adds this
+    integration's LLM API id to the agent's ``llm_hass_api`` list so the user
+    does not have to toggle it manually. Returns True if a change was applied.
+    Fails soft (returns False) on any incompatibility.
+    """
+    ent_reg = er.async_get(hass)
+    ent = ent_reg.async_get(agent_entity_id)
+    if ent is None or ent.config_entry_id is None:
+        _LOGGER.debug(
+            "[MSG] Cannot auto-enable API: agent %s has no config entry",
+            agent_entity_id,
+        )
+        return False
+
+    entry = hass.config_entries.async_get_entry(ent.config_entry_id)
+    if entry is None:
+        return False
+
+    # The conversation agent lives in a subentry on modern integrations
+    # (e.g. OpenAI). Fall back to the entry's own options on older ones.
+    sub_id = ent.config_subentry_id
+    try:
+        if sub_id and sub_id in entry.subentries:
+            subentry = entry.subentries[sub_id]
+            apis = list(subentry.data.get("llm_hass_api") or [])
+            if LLM_API_ID in apis:
+                return False
+            apis.append(LLM_API_ID)
+            new_data = {**subentry.data, "llm_hass_api": apis}
+            hass.config_entries.async_update_subentry(
+                entry, subentry, data=new_data
+            )
+            _LOGGER.info(
+                "[MSG] Enabled SmartHQ LLM API on agent %s", agent_entity_id
+            )
+            return True
+    except Exception as err:  # noqa: BLE001 - convenience only, never fatal
+        _LOGGER.warning(
+            "[MSG] Could not auto-enable SmartHQ API on %s: %s",
+            agent_entity_id,
+            err,
+        )
+    return False
 
 
 class SmartHQTelegramBridge:
@@ -166,7 +226,14 @@ class SmartHQTelegramBridge:
             await self._hass.services.async_call(
                 "telegram_bot",
                 "send_message",
-                {"target": chat_id, "message": message},
+                {
+                    "target": chat_id,
+                    "message": message,
+                    # Conversation replies are free-form text, not Markdown.
+                    # Sending without a parser avoids "Can't parse entities"
+                    # errors when the reply contains *, _, [ or similar chars.
+                    "parse_mode": "plain_text",
+                },
                 blocking=True,
             )
         except Exception:  # noqa: BLE001 - log and move on

@@ -99,7 +99,15 @@ class SmartHQOptionsFlowHandler(config_entries.OptionsFlow):
             ): bool,
         }
         # The conversation-agent selector is optional; default only if set.
+        # Convenience: if the user has not chosen one yet but exactly one
+        # conversation agent exists, pre-select it so they don't have to.
         agent_default = opts.get(OPTION_CONVERSATION_AGENT) or ""
+        if not agent_default:
+            from .llm_messaging import async_list_conversation_agents
+
+            agents = async_list_conversation_agents(self.hass)
+            if len(agents) == 1:
+                agent_default = agents[0]
         agent_key = (
             vol.Optional(OPTION_CONVERSATION_AGENT, default=agent_default)
             if agent_default
@@ -116,5 +124,30 @@ class SmartHQOptionsFlowHandler(config_entries.OptionsFlow):
         ] = str
 
         return self.async_show_form(
-            step_id="init", data_schema=vol.Schema(schema_dict)
+            step_id="init",
+            data_schema=vol.Schema(schema_dict),
+            description_placeholders={"setup_status": self._setup_status()},
         )
+
+    def _setup_status(self) -> str:
+        """Build a short prerequisite checklist shown above the options."""
+        from .llm_messaging import async_list_conversation_agents
+
+        agents = async_list_conversation_agents(self.hass)
+        has_telegram = any(
+            e.domain == "telegram_bot"
+            for e in self.hass.config_entries.async_entries()
+        )
+        agent_line = (
+            f"✅ Conversation agent available ({len(agents)} found)."
+            if agents
+            else "⚠️ No conversation agent found. Add an OpenAI, Google or "
+            "other conversation integration first, then return here."
+        )
+        tg_line = (
+            "✅ Telegram bot integration installed."
+            if has_telegram
+            else "ℹ️ Telegram not installed. Only needed if you enable "
+            "Telegram control — add the **Telegram bot** integration."
+        )
+        return f"{agent_line}\n\n{tg_line}"
