@@ -147,9 +147,11 @@ CMD_WATERHEATER_SET = "cloud.smarthq.command.waterheater.v1.set"
 # ---------------------------------------------------------------------------
 
 # mode services with these domains are exposed as HA switches (binary on/off)
-# rather than selects with multiple options
+# rather than selects with multiple options.
+# Note: domain.brightness is intentionally excluded here — hood lights use
+# service.mode + domain.brightness with multiple levels (off/dim/high) and
+# must be a select entity, not a binary switch.
 BRIGHTNESS_DOMAINS: frozenset[str] = frozenset({
-    "cloud.smarthq.domain.brightness",
     "cloud.smarthq.domain.light",
 })
 
