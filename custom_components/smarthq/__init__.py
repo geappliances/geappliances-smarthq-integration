@@ -73,6 +73,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     bucket: Dict[str, Any] = {}
     hass.data[DOMAIN][entry.entry_id] = bucket
 
+    # Snapshot the current options so the update listener can distinguish a
+    # real options change (which needs a reload) from an entry.data change —
+    # e.g. the OAuth access token being refreshed ~hourly, which also fires
+    # update listeners and would otherwise reload the whole integration every
+    # hour and drop all entities to `unavailable`.
+    bucket["_last_options"] = dict(entry.options)
+
     # API
     from .api import SmartHQApi  # Lazy import
     api = SmartHQApi(hass, entry)
@@ -442,7 +449,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload the entry when its options change."""
+    """Reload the entry only when its user-facing options actually change.
+
+    Update listeners fire on ANY config-entry update, including when HA's
+    OAuth2Session persists a freshly refreshed access token into entry.data
+    (~hourly). Reloading on those token refreshes tore down and rebuilt every
+    platform, briefly marking all entities `unavailable`. Compare the options
+    against the snapshot taken at setup and skip the reload when they're
+    unchanged (i.e. the update was a silent token refresh, not an options edit).
+    """
+    bucket = hass.data.get(DOMAIN, {}).get(entry.entry_id) or {}
+    if bucket.get("_last_options") == dict(entry.options):
+        _LOGGER.debug(
+            "SmartHQ entry updated without an options change "
+            "(likely a token refresh); skipping reload"
+        )
+        return
     await hass.config_entries.async_reload(entry.entry_id)
 
 
