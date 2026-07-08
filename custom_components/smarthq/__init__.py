@@ -160,14 +160,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Optional: provide 'ws' alias for legacy code compatibility
     bucket["ws"] = ws
     
-    # Settings polling task (every 30 seconds)
+    # Settings polling task
+    # Interval: 10 minutes. The SmartHQ WebSocket does not push device#setting
+    # events, so REST polling is required to catch changes made via the mobile
+    # app. 10 min is sufficient for low-frequency notification/alert toggles
+    # and reduces API traffic by ~95 % compared to the previous 30-second cadence.
+    _SETTINGS_POLL_INTERVAL = 600  # seconds
     async def _poll_settings():
-        """Poll settings every 30 seconds since WebSocket doesn't update them."""
+        """Poll device settings periodically since WebSocket doesn't push them."""
         from .dispatcher import SIGNAL_DEVICE_UPDATED
         from homeassistant.helpers.dispatcher import async_dispatcher_send
-        
+
         while True:
-            await asyncio.sleep(30)
+            await asyncio.sleep(_SETTINGS_POLL_INTERVAL)
             try:
                 for device_id in list(store.keys()):
                     try:
