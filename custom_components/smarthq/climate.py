@@ -264,7 +264,7 @@ class SmartHQThermostatClimate(ClimateEntity):
             except (TypeError, ValueError):
                 continue
             dom = (svc.get("domainType") or "").lower()
-            if "measurement" in dom or "early" in dom or "ambient" in dom:
+            if "measurement" in dom or "ambient" in dom:
                 preferred = val
                 break
             if fallback is None:
