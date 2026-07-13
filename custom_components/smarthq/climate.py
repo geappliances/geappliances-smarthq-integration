@@ -32,6 +32,7 @@ from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME
 from .dispatcher import SIGNAL_DEVICE_UPDATED
 from .service_registry import (
     THERMOSTAT_SERVICE,
+    TEMPERATURE_SERVICE,
     get_device_services,
     make_unique_id,
     get_service_mapping,
@@ -241,8 +242,34 @@ class SmartHQThermostatClimate(ClimateEntity):
 
     @property
     def current_temperature(self) -> float | None:
-        # thermostat.v1 doesn't expose a measured temperature field in state
-        return None
+        # thermostat.v1 doesn't expose a measured temperature field, but the
+        # same device typically publishes a sibling `service.temperature`
+        # service with a `fahrenheit` reading (surfaced as the "Ambient
+        # Temperature (°F)" sensor). Pull from there so Apple Home / the HA
+        # thermostat card show the actual room temp instead of "unknown".
+        snap = _store(self.hass, self._entry).get(self._device_id) or {}
+        services = (snap.get("snapshot") or {}).get("services") or {}
+        preferred: float | None = None
+        fallback: float | None = None
+        for sid, svc in services.items():
+            if sid == self._service_id:
+                continue
+            if (svc.get("serviceType") or "") != TEMPERATURE_SERVICE:
+                continue
+            raw = svc.get("fahrenheit")
+            if raw is None:
+                continue
+            try:
+                val = float(raw)
+            except (TypeError, ValueError):
+                continue
+            dom = (svc.get("domainType") or "").lower()
+            if "measurement" in dom or "ambient" in dom:
+                preferred = val
+                break
+            if fallback is None:
+                fallback = val
+        return preferred if preferred is not None else fallback
 
     @property
     def target_temperature(self) -> float | None:
