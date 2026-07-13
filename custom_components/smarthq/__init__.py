@@ -438,17 +438,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Assistant convenience layer (entity exposure + optional Telegram bridge).
     await _async_setup_messaging(hass, entry, bucket)
 
-    # Reload this entry whenever its options change so the messaging layer
-    # reflects the new settings.
+    # Reload this entry only when its user-facing options actually change so the
+    # messaging layer reflects the new settings.
+    #
+    # Update listeners fire on ANY config-entry update, including when HA's
+    # OAuth2Session persists a freshly refreshed access token into entry.data
+    # (~hourly). Reloading on those token refreshes tore down and rebuilt every
+    # platform, briefly marking all entities `unavailable`. Capture the current
+    # options in a closure and skip the reload when they're unchanged (i.e. the
+    # update was a silent token refresh, not an options edit). The closure is
+    # scoped to this async_setup_entry call, so after a reload the new setup
+    # naturally starts with fresh options — no stale state possible.
+    _last_options: dict = dict(entry.options)
+
+    async def _async_options_updated(
+        hass: HomeAssistant, entry: ConfigEntry
+    ) -> None:
+        nonlocal _last_options
+        if dict(entry.options) == _last_options:
+            _LOGGER.debug(
+                "SmartHQ entry updated without an options change "
+                "(likely a token refresh); skipping reload"
+            )
+            return
+        _last_options = dict(entry.options)
+        await hass.config_entries.async_reload(entry.entry_id)
+
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
     _LOGGER.info("SmartHQ setup complete (devices=%d)", len(store))
     return True
-
-
-async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload the entry when its options change."""
-    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def _async_setup_messaging(
