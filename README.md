@@ -15,6 +15,21 @@ This integration uses **OAuth2 Application Credentials** with Authorization Code
 
 ---
 
+## Current Limitations
+
+This integration is built exclusively on the **SmartHQ v2 public developer API**. The SmartHQ mobile app communicates over GE's internal v1 API, which exposes capabilities not available through the public v2 path. As a result, some product lines have limited or no support in Home Assistant even when the app shows full control:
+
+| Product Line | Status | Notes |
+|---|---|---|
+| **Oven / Wall Oven / Range** | ⚠️ Limited | Only basic toggles (Sabbath, Control Lock) and notification settings are available. Cooking features (cavity temperature, cooking mode, cook time, remote start) are served via the app's internal API and are not yet exposed through the v2 public API. The App & Cloud team is actively working to expand oven support. |
+| **Advantium (Speed Cook Oven)** | ❌ Not supported | The Advantium device has no appliance-specific services registered in the v2 API. Only common services (firmware, RSSI, etc.) may appear. |
+| **Fisher & Paykel appliances** | ❌ Not supported | Fisher & Paykel products are not documented in the SmartHQ v2 public developer API and are not compatible with this integration. |
+| **Electric / Gas / Induction Cooktops** | ⚠️ Limited | Active cooktop control features may not be exposed through the v2 API. Basic status and settings entities may appear. |
+
+> If your appliance connects successfully but shows fewer entities than expected, the most likely cause is that the cooking or control services for your specific model are not yet exposed through the v2 public developer API — not a bug in the integration.
+
+---
+
 ## How It Works — Service-Based Entity Discovery
 
 This integration is built on the **SmartHQ Developer Portal Cloud API**, which exposes each appliance's capabilities as a list of **Services**. Every SmartHQ device commissioning declares which services it supports (e.g. `cooking.mode.v1`, `laundry.state.v1`, `toggle`, `meter`, etc.).
