@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from homeassistant.components.climate import (
     ClimateEntity,
     ClimateEntityFeature,
+    HVACAction,
     HVACMode,
 )
 from homeassistant.components.climate.const import (
@@ -31,6 +32,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME
 from .dispatcher import SIGNAL_DEVICE_UPDATED
 from .service_registry import (
+    POWER_USAGE_SERVICE,
     THERMOSTAT_SERVICE,
     TEMPERATURE_SERVICE,
     get_device_services,
@@ -41,16 +43,20 @@ from .service_registry import (
 
 _LOGGER = logging.getLogger(__name__)
 
+_COMPRESSOR_POWER_THRESHOLD_W = 120.0
+_ENERGY_SAVER_MODE = "cloud.smarthq.type.thermostatmode.cool.energysaver"
+_NATIVE_AUTO_MODE = "cloud.smarthq.type.thermostatmode.auto"
+
 # ---------------------------------------------------------------------------
 # SmartHQ → HA HVAC mode mapping
 # ---------------------------------------------------------------------------
 _THERMOSTAT_MODE_MAP: Dict[str, HVACMode] = {
     "cloud.smarthq.type.thermostatmode.cool":              HVACMode.COOL,
-    "cloud.smarthq.type.thermostatmode.cool.energysaver":  HVACMode.COOL,
+    _ENERGY_SAVER_MODE:                                    HVACMode.AUTO,
     "cloud.smarthq.type.thermostatmode.cool.quiet":        HVACMode.COOL,
     "cloud.smarthq.type.thermostatmode.cool.turbo":        HVACMode.COOL,
     "cloud.smarthq.type.thermostatmode.heat":              HVACMode.HEAT,
-    "cloud.smarthq.type.thermostatmode.auto":              HVACMode.AUTO,
+    _NATIVE_AUTO_MODE:                                     HVACMode.AUTO,
     "cloud.smarthq.type.thermostatmode.auto.twotemperature": HVACMode.AUTO,
     "cloud.smarthq.type.thermostatmode.dry":               HVACMode.DRY,
     "cloud.smarthq.type.thermostatmode.fanonly":           HVACMode.FAN_ONLY,
@@ -63,7 +69,7 @@ _THERMOSTAT_MODE_MAP: Dict[str, HVACMode] = {
 _HA_MODE_TO_SMARTHQ: Dict[HVACMode, str] = {
     HVACMode.COOL:     "cloud.smarthq.type.thermostatmode.cool",
     HVACMode.HEAT:     "cloud.smarthq.type.thermostatmode.heat",
-    HVACMode.AUTO:     "cloud.smarthq.type.thermostatmode.auto",
+    HVACMode.AUTO:     _NATIVE_AUTO_MODE,
     HVACMode.DRY:      "cloud.smarthq.type.thermostatmode.dry",
     HVACMode.FAN_ONLY: "cloud.smarthq.type.thermostatmode.fanonly",
     HVACMode.OFF:      "cloud.smarthq.type.thermostatmode.off",
@@ -200,9 +206,9 @@ class SmartHQThermostatClimate(ClimateEntity):
         self._attr_unique_id = unique_id
 
         # Build supported HVAC modes from config
-        supported_modes_tokens = svc_config.get("supportedModes") or []
+        self._supported_mode_tokens = set(svc_config.get("supportedModes") or [])
         hvac_modes = {HVACMode.OFF}
-        for token in supported_modes_tokens:
+        for token in self._supported_mode_tokens:
             ha_mode = _THERMOSTAT_MODE_MAP.get(token)
             if ha_mode:
                 hvac_modes.add(ha_mode)
@@ -239,6 +245,56 @@ class SmartHQThermostatClimate(ClimateEntity):
             return HVACMode.OFF
         mode_token = st.get("mode") or ""
         return _THERMOSTAT_MODE_MAP.get(mode_token, HVACMode.OFF)
+
+    @property
+    def hvac_action(self) -> HVACAction | None:
+        """Return the unit's current activity."""
+        st = self._get_state()
+        if st.get("on", True) is False:
+            return HVACAction.OFF
+
+        mode = self.hvac_mode
+        if mode == HVACMode.OFF:
+            return HVACAction.OFF
+        if mode == HVACMode.FAN_ONLY:
+            return HVACAction.FAN
+
+        running = self._compressor_running()
+        if mode == HVACMode.HEAT:
+            return HVACAction.HEATING if running else HVACAction.IDLE
+        if mode == HVACMode.DRY:
+            return HVACAction.DRYING if running else HVACAction.IDLE
+        return HVACAction.COOLING if running else HVACAction.IDLE
+
+    def _instantaneous_power(self) -> float | None:
+        """Return live power draw from the sibling power service."""
+        snap = _store(self.hass, self._entry).get(self._device_id) or {}
+        services = (snap.get("snapshot") or {}).get("services") or {}
+        for svc in services.values():
+            if (svc.get("serviceType") or "") != POWER_USAGE_SERVICE:
+                continue
+            raw = svc.get("instantaneousPower")
+            if raw is None:
+                continue
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _compressor_running(self) -> bool:
+        """Infer compressor activity from power or current temperature."""
+        power = self._instantaneous_power()
+        if power is not None:
+            return power > _COMPRESSOR_POWER_THRESHOLD_W
+
+        current = self.current_temperature
+        target = self.target_temperature
+        if current is None or target is None:
+            return True
+        if self.hvac_mode == HVACMode.HEAT:
+            return current < target
+        return current > target
 
     @property
     def current_temperature(self) -> float | None:
@@ -310,6 +366,12 @@ class SmartHQThermostatClimate(ClimateEntity):
             await client.async_set_thermostat(self._device_id, self._service_id, on=False)
         else:
             smarthq_mode = _HA_MODE_TO_SMARTHQ.get(hvac_mode)
+            if (
+                hvac_mode == HVACMode.AUTO
+                and _ENERGY_SAVER_MODE in self._supported_mode_tokens
+                and _NATIVE_AUTO_MODE not in self._supported_mode_tokens
+            ):
+                smarthq_mode = _ENERGY_SAVER_MODE
             if smarthq_mode:
                 await client.async_set_thermostat(
                     self._device_id, self._service_id,
