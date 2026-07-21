@@ -12,6 +12,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .api import SmartHQApi
 from .dispatcher import SIGNAL_DEVICE_UPDATED
+from .service_registry import POWER_USAGE_SERVICE, THERMOSTAT_SERVICE
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1468,6 +1469,14 @@ class SmartHQWebsocket:
                 base = dict(cur_services.get(sid) or {})
                 base.update(st)
                 cur_services[sid] = base
+
+            if any(
+                st.get("serviceType") == THERMOSTAT_SERVICE and st.get("on") is False
+                for st in svc_states.values()
+            ):
+                for service_state in cur_services.values():
+                    if service_state.get("serviceType") == POWER_USAGE_SERVICE:
+                        service_state["instantaneousPower"] = 0
             
             # Update index
             cur_index = snap.setdefault("index", {})
