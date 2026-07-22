@@ -80,6 +80,13 @@ DISHWASHER_CUSTOM_CYCLE_SERVICE = "cloud.smarthq.service.dishwasher.custom.cycle
 DISHWASHER_FAVORITES_V1_SERVICE = "cloud.smarthq.service.dishwasher.favorites.v1"
 
 # ---------------------------------------------------------------------------
+# DomainType constants (used to distinguish toggle domains that should route
+# to a diagnostic binary_sensor instead of a switch when read-only)
+# ---------------------------------------------------------------------------
+
+FILTER_STATUS_DOMAIN = "cloud.smarthq.domain.filter.status"
+
+# ---------------------------------------------------------------------------
 # Command type constants
 # ---------------------------------------------------------------------------
 
@@ -292,10 +299,10 @@ SERVICE_MAPPING: dict[str, dict] = {
     # STANDARD mappings — generic handlers, no custom entity class needed
     # ------------------------------------------------------------------
 
-    # switch
+    # switch (writable) / binary_sensor (read-only diagnostic toggles, e.g. filter status)
     TOGGLE_SERVICE: {
         "type": "standard",
-        "platform": "switch",
+        "platform": ["switch", "binary_sensor"],
         "handler": "StandardToggleSwitch",
     },
     LAUNDRY_TOGGLE_V2_SERVICE: {
