@@ -20,6 +20,9 @@ from .service_registry import (
     DOOR_SERVICE,
     FILTER_SERVICE,
     CONNECT_SERVICE,
+    TOGGLE_SERVICE,
+    CMD_TOGGLE_SET,
+    FILTER_STATUS_DOMAIN,
     STOPWATCH_SERVICE,
     ENHANCEDFEATURE_SERVICE,
     DISHWASHER_STATE_SERVICE,
@@ -256,12 +259,31 @@ async def async_setup_entry(
 
                 stype = svc.get("serviceType") or ""
                 service_id = svc.get("id") or svc.get("serviceId") or ""
+                cmds = svc.get("supportedCommands") or []
 
                 # ── Allowlist check ──
                 if get_service_mapping(stype) is None:
                     _LOGGER.debug("[BINARY_SENSOR] Skipping unmapped serviceType=%s", stype)
                     continue
                 if not is_platform_mapped(stype, "binary_sensor"):
+                    continue
+
+                if stype == TOGGLE_SERVICE:
+                    # Read-only toggle (no supportedCommands) on the filter-status
+                    # domain: expose as a diagnostic problem binary_sensor instead
+                    # of skipping it (switch.py only creates a switch when
+                    # CMD_TOGGLE_SET is present, so this is mutually exclusive).
+                    dom = svc.get("domainType") or ""
+                    if CMD_TOGGLE_SET in cmds or dom != FILTER_STATUS_DOMAIN:
+                        continue
+                    uid = make_unique_id(device_id, service_id, "filter_status")
+                    if uid not in created:
+                        created.add(uid)
+                        coord_entities.append(
+                            SmartHQToggleProblemBinarySensor(
+                                hass, entry, device_id, service_id, "Filter Status", uid
+                            )
+                        )
                     continue
 
                 if stype == FIRMWARE_SERVICE:
@@ -469,6 +491,67 @@ class SmartHQDoorBinarySensor(BinarySensorEntity):
         if isinstance(raw, bool):
             return raw
         return str(raw).lower() in {"open", "true", "1"}
+
+    @property
+    def available(self) -> bool:
+        return bool(self._get_state())
+
+    @property
+    def device_info(self):
+        return _device_info_for(self.hass, self._entry, self._device_id)
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_DEVICE_UPDATED.format(device_id=self._device_id),
+                self._signal_update,
+            )
+        )
+        self.async_write_ha_state()
+
+    @callback
+    def _signal_update(self) -> None:
+        self.async_write_ha_state()
+
+
+class SmartHQToggleProblemBinarySensor(BinarySensorEntity):
+    """Diagnostic binary sensor for a read-only toggle service (e.g. filter status).
+
+    Routed here instead of switch.py because the service has no
+    supportedCommands (CMD_TOGGLE_SET absent) — it can only be observed, not
+    controlled. `on` means the condition needs attention (e.g. filter cleaning
+    required).
+    """
+
+    _attr_should_poll = False
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        device_id: str,
+        service_id: str,
+        label: str,
+        unique_id: str,
+    ) -> None:
+        self.hass = hass
+        self._entry = entry
+        self._device_id = device_id
+        self._service_id = service_id
+        self._attr_name = label
+        self._attr_unique_id = unique_id
+
+    def _get_state(self) -> dict:
+        store = _store(self.hass, self._entry)
+        snap = (store.get(self._device_id) or {}).get("snapshot") or {}
+        return (snap.get("services") or {}).get(self._service_id) or {}
+
+    @property
+    def is_on(self) -> bool:
+        return bool(self._get_state().get("on"))
 
     @property
     def available(self) -> bool:
