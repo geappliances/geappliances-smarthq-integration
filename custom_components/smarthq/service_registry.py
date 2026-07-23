@@ -688,7 +688,7 @@ SERVICE_MAPPING: dict[str, dict] = {
     },
     WATERHEATER_SERVICE: {
         "type": "custom",
-        "platform": "water_heater",
+        "platform": ["water_heater", "select"],
         "handler": "SmartHQWaterHeater",
     },
 }
