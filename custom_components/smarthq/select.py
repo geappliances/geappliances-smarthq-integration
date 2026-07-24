@@ -39,6 +39,8 @@ from .service_registry import (
     DISHDRAWER_MODE_LEGACY_SERVICE,
     DISHWASHER_CUSTOM_CYCLE_SERVICE,
     DISHWASHER_FAVORITES_V1_SERVICE,
+    WATERHEATER_SERVICE,
+    CMD_WATERHEATER_SET,
     CMD_MODE_SET,
     CMD_LAUNDRY_MODE_SET,
     CMD_DISHWASHER_MODE_SET,
@@ -322,6 +324,16 @@ async def async_setup_entry(hass, entry, async_add_entities):
             # ── dishdrawer.mode.legacy (collect for aggregation) ──────────────
             elif stype == DISHDRAWER_MODE_LEGACY_SERVICE and CMD_DISHDRAWER_MODE_LEGACY_SET in cmds:
                 dishdrawer_mode_legacy_svcs.append(svc)
+
+            # ── water heater capacity select (Normal/High/X-High tank size) ──
+            elif stype == WATERHEATER_SERVICE and CMD_WATERHEATER_SET in cmds:
+                if cfg.get("supportedCapacities"):
+                    entities.append(SmartHQWaterHeaterCapacitySelect(
+                        hass=hass, entry=entry, client=client,
+                        device_id=device_id, service_id=service_id,
+                        dev_name=dev_name, cfg=cfg,
+                        unique_id=make_unique_id(device_id, service_id, "waterheater_capacity"),
+                    ))
 
             # ── dishwasher.favorites.v1 select ────────────────────────────────
             elif stype == DISHWASHER_FAVORITES_V1_SERVICE and CMD_DISHWASHER_FAVORITES_V1_SET in cmds:
@@ -719,6 +731,98 @@ class SmartHQModeSelect(SelectEntity):
     @callback
     def _signal_update(self) -> None:
         self._refresh_options_from_snapshot()
+        self.async_write_ha_state()
+
+
+# ---------------------------------------------------------------------------
+# Water heater capacity select (Normal / High / X-High tank size)
+# ---------------------------------------------------------------------------
+_WH_CAPACITY_PRETTY: Dict[str, str] = {
+    "cloud.smarthq.type.waterheatercapacity.normal": "Normal",
+    "cloud.smarthq.type.waterheatercapacity.high": "High",
+    "cloud.smarthq.type.waterheatercapacity.extrahigh": "X-High",
+    "cloud.smarthq.type.waterheatercapacity.unknown": "Unknown",
+}
+
+
+class SmartHQWaterHeaterCapacitySelect(SelectEntity):
+    """Select entity for waterheater.v1 tank capacity (Normal/High/X-High).
+
+    NOTE: The SmartHQ v2 spec documents this "capacity" state/config on the
+    waterheater.v1 service (config.supportedCapacities, state.capacity,
+    command.waterheater.v1.set{capacity}), but this entity has not yet been
+    verified against a real hybrid water heater. If you have one of these
+    appliances, please try it out and let us know (via the GitHub issue)
+    whether the options list and the set command behave as expected!
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, hass, entry, client, device_id, service_id,
+                 dev_name, cfg, unique_id):
+        self.hass = hass
+        self._entry = entry
+        self._client = client
+        self._device_id = device_id
+        self._service_id = service_id
+        self._attr_unique_id = unique_id
+        self._attr_name = f"{dev_name} Capacity"
+
+        self._token_to_name: Dict[str, str] = {}
+        self._name_to_token: Dict[str, str] = {}
+        self._build_options_from_cfg(cfg)
+
+    def _build_options_from_cfg(self, cfg: dict) -> None:
+        capacities = cfg.get("supportedCapacities") or []
+        tokens = [c for c in capacities if isinstance(c, str)]
+        self._token_to_name = {t: _WH_CAPACITY_PRETTY.get(t, _pretty(t)) for t in tokens}
+        self._name_to_token = {v: k for k, v in self._token_to_name.items()}
+        self._attr_options = list(self._name_to_token.keys())
+
+    @property
+    def current_option(self) -> Optional[str]:
+        snap = _snapshot_for(self.hass, self._entry, self._device_id)
+        svc = (snap.get("services") or {}).get(self._service_id) or {}
+        token = svc.get("capacity")
+        if token is None:
+            return None
+        return self._token_to_name.get(str(token)) or _WH_CAPACITY_PRETTY.get(str(token)) or _pretty(str(token))
+
+    @property
+    def available(self) -> bool:
+        snap = _snapshot_for(self.hass, self._entry, self._device_id)
+        svc = (snap.get("services") or {}).get(self._service_id) or {}
+        if svc.get("disabled"):
+            return False
+        dev_data = _dev_payload(self.hass, self._entry, self._device_id)
+        return (dev_data.get("presence") or {}).get("presence") == "ONLINE"
+
+    @property
+    def device_info(self):
+        return _device_info_for(self.hass, self._entry, self._device_id)
+
+    async def async_select_option(self, option: str) -> None:
+        token = self._name_to_token.get(option)
+        if self._client and token:
+            await self._client.async_set_waterheater(
+                self._device_id, self._service_id, capacity=token
+            )
+        self.schedule_update_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_DEVICE_UPDATED.format(device_id=self._device_id),
+                self._signal_update,
+            )
+        )
+        self._signal_update()
+
+    @callback
+    def _signal_update(self) -> None:
         self.async_write_ha_state()
 
 
