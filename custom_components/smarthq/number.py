@@ -162,7 +162,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     dev_name=dev_name, label=label,
                     min_val=min_val, max_val=max_val, unit=ha_unit,
                     unique_id=make_unique_id(device_id, service_id, "int_number"),
-                    enabled_default=enabled_default,
+                    enabled_default=True,
                     entity_category=None,
                     warm_mode_only=False,
                 ))
