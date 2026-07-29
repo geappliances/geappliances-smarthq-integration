@@ -152,6 +152,19 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
             # ── Route to entity builder based on serviceType ──
             if stype == TOGGLE_SERVICE and CMD_TOGGLE_SET in cmds:
+                # Skip if this device already has a toggle switch for this domain.
+                # Some devices expose the same domainType (e.g. controls.lock) as a
+                # separate toggle service instance per serviceDeviceType, which would
+                # otherwise create multiple identically-labeled switch entities
+                # (see MODE_SERVICE dedup below for the same class of issue).
+                dedup_key = (stype, dom)
+                if dedup_key in seen_switch_domains:
+                    _LOGGER.debug(
+                        "[SWITCH] Skipping duplicate toggle switch for device=%s domain=%s svc=%s",
+                        device_id, dom, service_id,
+                    )
+                    continue
+                seen_switch_domains.add(dedup_key)
                 label, icon = _label_for_toggle(dom, svc.get("serviceDeviceType") or "")
                 entities.append(SmartHQToggleSwitch(
                     hass=hass, entry=entry, ws=ws,
