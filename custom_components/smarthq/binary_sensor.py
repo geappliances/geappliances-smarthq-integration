@@ -23,6 +23,7 @@ from .service_registry import (
     TOGGLE_SERVICE,
     CMD_TOGGLE_SET,
     FILTER_STATUS_DOMAIN,
+    DOOR_DOMAIN,
     STOPWATCH_SERVICE,
     ENHANCEDFEATURE_SERVICE,
     DISHWASHER_STATE_SERVICE,
@@ -274,6 +275,19 @@ async def async_setup_entry(
                     # of skipping it (switch.py only creates a switch when
                     # CMD_TOGGLE_SET is present, so this is mutually exclusive).
                     dom = svc.get("domainType") or ""
+                    # Read-only toggle on the door domain: some appliances report
+                    # door state this way rather than via DOOR_SERVICE (e.g. the
+                    # Fisher & Paykel dishwasher publishes cloud.smarthq.domain.door
+                    # as a toggle with no supportedCommands). Without this it is
+                    # dropped by both platforms and the door state is never exposed.
+                    if CMD_TOGGLE_SET not in cmds and dom == DOOR_DOMAIN:
+                        uid = make_unique_id(device_id, service_id, "door")
+                        if uid not in created:
+                            created.add(uid)
+                            coord_entities.append(
+                                SmartHQDoorBinarySensor(hass, entry, device_id, service_id, "Door", uid)
+                            )
+                        continue
                     if CMD_TOGGLE_SET in cmds or dom != FILTER_STATUS_DOMAIN:
                         continue
                     uid = make_unique_id(device_id, service_id, "filter_status")
@@ -487,7 +501,16 @@ class SmartHQDoorBinarySensor(BinarySensorEntity):
     def is_on(self) -> bool:
         """Return True when door is open."""
         st = self._get_state()
-        raw = st.get("doorState") or st.get("state") or st.get("open") or ""
+        raw = st.get("doorState") or st.get("state") or st.get("open")
+        if raw is None:
+            # Toggle-shaped door services carry {"on": bool}. Checked last so a
+            # genuine doorState always wins: ws_client normalises `enabled` and
+            # `mode` into `on` for every service, so `on` may be present but
+            # unrelated to the door.
+            on = st.get("on")
+            if isinstance(on, bool):
+                return on
+            raw = ""
         if isinstance(raw, bool):
             return raw
         return str(raw).lower() in {"open", "true", "1"}

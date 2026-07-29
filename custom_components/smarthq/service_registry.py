@@ -85,6 +85,7 @@ DISHWASHER_FAVORITES_V1_SERVICE = "cloud.smarthq.service.dishwasher.favorites.v1
 # ---------------------------------------------------------------------------
 
 FILTER_STATUS_DOMAIN = "cloud.smarthq.domain.filter.status"
+DOOR_DOMAIN = "cloud.smarthq.domain.door"
 
 # ---------------------------------------------------------------------------
 # Command type constants
