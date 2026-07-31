@@ -34,5 +34,42 @@
         }
       }
     }
+  },
+  "entity": {
+    "sensor": {
+      "ambient_temperature": {
+        "name": "Ambient Temperature"
+      },
+      "cavity_temperature": {
+        "name": "Cavity Temperature"
+      },
+      "probe_temperature": {
+        "name": "Probe Temperature"
+      },
+      "target_temperature": {
+        "name": "Target Temperature"
+      },
+      "cavity_target_temperature": {
+        "name": "Cavity Target Temperature"
+      },
+      "probe_target_temperature": {
+        "name": "Probe Target Temperature"
+      },
+      "brew_temperature": {
+        "name": "Brew Temperature"
+      },
+      "battery_level": {
+        "name": "Battery Level"
+      },
+      "cook_time_remaining": {
+        "name": "Cook Time Remaining"
+      },
+      "cycle_time_remaining": {
+        "name": "Cycle Time Remaining"
+      },
+      "time_remaining": {
+        "name": "Time Remaining"
+      }
+    }
   }
 }
