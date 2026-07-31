@@ -64,6 +64,27 @@
       },
       "time_remaining": {
         "name": "Time Remaining"
+      },
+      "humidity": {
+        "name": "Humidity"
+      },
+      "temperature": {
+        "name": "Temperature"
+      },
+      "volatile_organic_compounds": {
+        "name": "Volatile Organic Compounds"
+      },
+      "pm25": {
+        "name": "PM2.5"
+      },
+      "pm10": {
+        "name": "PM10"
+      },
+      "pm1": {
+        "name": "PM1"
+      },
+      "aqi": {
+        "name": "AQI"
       }
     }
   }
