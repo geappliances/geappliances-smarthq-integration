@@ -226,12 +226,18 @@ class SmartHQThermostatClimate(ClimateEntity):
 
         # Build supported features
         features = ClimateEntityFeature.TARGET_TEMPERATURE
+
         if fan_modes:
             features |= ClimateEntityFeature.FAN_MODE
+
         if svc_config.get("supportsSwing"):
             features |= ClimateEntityFeature.SWING_MODE
-        self._attr_supported_features = features
+            self._attr_swing_modes = ["off", "on"]
+        else:
+            self._attr_swing_modes = []
 
+        self._attr_supported_features = features
+        
     def _get_state(self) -> dict:
         store = _store(self.hass, self._entry)
         snap = (store.get(self._device_id) or {}).get("snapshot") or {}
