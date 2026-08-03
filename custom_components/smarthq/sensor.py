@@ -5,7 +5,12 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
+from homeassistant.components.sensor import (
+    SensorEntity,
+    SensorDeviceClass,
+    SensorEntityDescription,
+    SensorStateClass,
+)
 from homeassistant.const import (
     UnitOfTemperature,
     UnitOfTime,
@@ -322,6 +327,36 @@ def _camel_to_words(key: str) -> str:
     return s.replace("_", " ").strip().title()
 
 
+def _make_translation_key(label: str) -> Optional[str]:
+    """Create a stable translation-key slug from an entity label."""
+    if not label:
+        return None
+    key = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
+    return key or None
+
+
+def _build_sensor_description(
+    label: str,
+    *,
+    translation_key: Optional[str] = None,
+    device_class: Optional[SensorDeviceClass] = None,
+    native_unit_of_measurement: Optional[str] = None,
+    icon: Optional[str] = None,
+    entity_category: Optional[EntityCategory] = None,
+) -> SensorEntityDescription:
+    """Build a metadata-driven entity description for Home Assistant sensors."""
+    key = translation_key or _make_translation_key(label)
+    return SensorEntityDescription(
+        key=key or "sensor",
+        translation_key=key,
+        name=label,
+        device_class=device_class,
+        native_unit_of_measurement=native_unit_of_measurement,
+        icon=icon,
+        entity_category=entity_category,
+    )
+
+
 def _label_for_key(key: str, stype: str = "", dom: str = "") -> str:
     """Generate a human-readable label for any state_key with optional context.
 
@@ -400,6 +435,7 @@ class SmartHQSnapshotSensor(SensorEntity):
         device_class: Optional[SensorDeviceClass],
         unit: Optional[str],
         service_id: str,
+        translation_key: Optional[str] = None,
     ):
         self.hass = hass
         self._entry = entry
@@ -418,11 +454,16 @@ class SmartHQSnapshotSensor(SensorEntity):
             self._attr_native_unit_of_measurement = unit
             self._attr_device_class = device_class
 
-        info = _dev_payload(hass, entry, device_id).get("info") or {}
-        dev_name = info.get("nickname") or info.get("name") or DEFAULT_NAME
-        self._attr_name = f"{dev_name} {label}"
+        self.entity_description = _build_sensor_description(
+            label,
+            translation_key=translation_key,
+            device_class=device_class,
+            native_unit_of_measurement=unit,
+            icon=icon,
+        )
         self._attr_unique_id = f"{DOMAIN}:{device_id}:sensor:{service_id}:{state_key}"
         self._attr_has_entity_name = True
+        self._attr_name = None
 
     def _get_service_meta(self):
         """Return (service_state, service_type, domain_type)."""
@@ -643,13 +684,21 @@ class SmartHQServiceSensor(SensorEntity):
         unique_id: str,
         entity_category=None,
         enabled_default: bool = True,
+        translation_key: Optional[str] = None,
     ) -> None:
         self.hass = hass
         self._entry = entry
         self._device_id = device_id
         self._service_id = service_id
         self._state_key = state_key
-        self._attr_name = f"{dev_name} {label}"
+        self.entity_description = _build_sensor_description(
+            label,
+            translation_key=translation_key,
+            device_class=device_class,
+            native_unit_of_measurement=unit,
+            entity_category=entity_category,
+        )
+        self._attr_name = None
         # Only set _attr_ when a value is given; None would shadow subclass properties.
         if device_class is not None:
             self._attr_device_class = device_class
@@ -713,6 +762,7 @@ class SmartHQTempSensor(SmartHQServiceSensor):
         self,
         hass, entry, device_id, service_id, dev_name,
         label: str, unique_id: str,
+        translation_key: Optional[str] = None,
     ) -> None:
         # Pass unit=None so SmartHQServiceSensor.__init__ does NOT set
         # _attr_native_unit_of_measurement — our property must take priority.
@@ -721,6 +771,7 @@ class SmartHQTempSensor(SmartHQServiceSensor):
             label, "fahrenheit",
             None, None,  # device_class and unit: do NOT fix via _attr_
             unique_id,
+            translation_key=translation_key,
         )
 
     # device_class is intentionally NOT set to SensorDeviceClass.TEMPERATURE.
@@ -791,6 +842,7 @@ class SmartHQRawTempSensor(SmartHQServiceSensor):
         self,
         hass, entry, device_id, service_id, dev_name,
         label: str, state_key: str, raw_unit: str, unique_id: str,
+        translation_key: Optional[str] = None,
     ) -> None:
         # Pass unit=None so _attr_ does not fix the unit — our property overrides it.
         super().__init__(
@@ -798,6 +850,7 @@ class SmartHQRawTempSensor(SmartHQServiceSensor):
             label, state_key,
             None, None,
             unique_id,
+            translation_key=translation_key,
         )
         self._raw_unit = raw_unit  # UnitOfTemperature.FAHRENHEIT or CELSIUS
 
@@ -847,10 +900,12 @@ class SmartHQMeterSensor(SmartHQServiceSensor):
         self,
         hass, entry, device_id, service_id, dev_name,
         label, unit, device_class, unique_id,
+        translation_key: Optional[str] = None,
     ) -> None:
         super().__init__(
             hass, entry, device_id, service_id, dev_name,
             label, "meterValue", device_class, unit, unique_id,
+            translation_key=translation_key,
         )
 
     @property
@@ -869,6 +924,7 @@ class SmartHQEnvironmentalSensor(SmartHQServiceSensor):
         self,
         hass, entry, device_id, service_id, dev_name,
         label, env_class_str: str, unique_id,
+        translation_key: Optional[str] = None,
     ) -> None:
         # Map device class string to HA device class enum
         _cls_map = {
@@ -885,6 +941,7 @@ class SmartHQEnvironmentalSensor(SmartHQServiceSensor):
         super().__init__(
             hass, entry, device_id, service_id, dev_name,
             label, "stateValue", dev_class, None, unique_id,
+            translation_key=translation_key,
         )
 
     @property
@@ -908,10 +965,12 @@ class SmartHQLaundryStateSensor(SmartHQServiceSensor):
         self,
         hass, entry, device_id, service_id, dev_name,
         label, state_key, unique_id,
+        translation_key: Optional[str] = None,
     ) -> None:
         super().__init__(
             hass, entry, device_id, service_id, dev_name,
             label, state_key, None, None, unique_id,
+            translation_key=translation_key,
         )
         self._attr_icon = _LAUNDRY_STATE_ICONS.get(state_key, "mdi:washing-machine")
 
@@ -1094,6 +1153,7 @@ def _iter_dynamic_sensors(hass: HomeAssistant, entry: ConfigEntry, device_id: st
                 hass, entry, device_id,
                 label=label, state_key=key, icon=icon,
                 device_class=dev_class, unit=unit, service_id=sid,
+                translation_key=_make_translation_key(label),
             )
         )
         added_pairs.add(pair)
@@ -1143,6 +1203,7 @@ def _iter_dynamic_sensors(hass: HomeAssistant, entry: ConfigEntry, device_id: st
                 hass, entry, device_id,
                 label=label, state_key=key, icon=None,
                 device_class=dev_class, unit=unit, service_id=sid,
+                translation_key=_make_translation_key(label),
             )
         )
         added_pairs.add(pair)
@@ -1486,10 +1547,12 @@ def _build_standard_sensors(
         if f.cls == "L":
             entity: SensorEntity = SmartHQLaundryStateSensor(
                 hass, entry, device_id, service_id, dev_name, label, f.key, uid,
+                translation_key=_make_translation_key(label),
             )
         elif f.cls == "T":
             entity = SmartHQRawTempSensor(
                 hass, entry, device_id, service_id, dev_name, label, f.key, f.unit, uid,
+                translation_key=_make_translation_key(label),
             )
         else:  # "S"
             kwargs: dict = {}
@@ -1500,6 +1563,7 @@ def _build_standard_sensors(
             entity = SmartHQServiceSensor(
                 hass, entry, device_id, service_id, dev_name,
                 label, f.key, f.dev_cls, f.unit, uid, **kwargs,
+                translation_key=_make_translation_key(label),
             )
         result.append(entity)
         existing_uids.add(uid)
@@ -1585,6 +1649,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                             hass, entry, device_id, service_id, dev_name,
                             label_base, "value",
                             dev_class, ha_unit, uid,
+                            translation_key=_make_translation_key(label_base),
                         ))
                         existing_uids.add(uid)
 
@@ -1598,6 +1663,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                         entities.append(SmartHQMeterSensor(
                             hass, entry, device_id, service_id, dev_name,
                             label_base, ha_unit, dev_class, uid,
+                            translation_key=_make_translation_key(label_base),
                         ))
                         existing_uids.add(uid)
 
@@ -1610,6 +1676,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                         entities.append(SmartHQEnvironmentalSensor(
                             hass, entry, device_id, service_id, dev_name,
                             label_base, env_class, uid,
+                            translation_key=_make_translation_key(label_base),
                         ))
                         existing_uids.add(uid)
 
@@ -1622,6 +1689,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                             hass, entry, device_id, service_id, dev_name,
                             label_base, "value",
                             None, None, uid,
+                            translation_key=_make_translation_key(label_base),
                         ))
                         existing_uids.add(uid)
 
@@ -1635,6 +1703,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                             hass, entry, device_id, service_id, dev_name,
                             label_base, "stringValue",
                             None, None, uid,
+                            translation_key=_make_translation_key(label_base),
                         ))
                         existing_uids.add(uid)
 
