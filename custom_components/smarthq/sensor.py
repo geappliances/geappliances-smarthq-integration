@@ -454,8 +454,6 @@ class SmartHQSnapshotSensor(SensorEntity):
             self._attr_native_unit_of_measurement = unit
             self._attr_device_class = device_class
 
-        info = _dev_payload(hass, entry, device_id).get("info") or {}
-        _ = info.get("nickname") or info.get("name") or DEFAULT_NAME
         self.entity_description = _build_sensor_description(
             label,
             translation_key=translation_key,
