@@ -1553,10 +1553,13 @@ class SmartHQTemperatureSetpointSelect(SelectEntity):
             return round(f)
         return round((f - 32) * 5 / 9)
 
-    def _display_to_f(self, v: int) -> float:
+    def _display_to_f(self, v: int) -> int:
+        # Always send a whole-degree Fahrenheit value — the API/appliance
+        # firmware expects an integer (e.g. 150), not a converted decimal
+        # (e.g. 134.6), which the device silently ignores.
         if self._is_f():
-            return float(v)
-        return round(v * 9 / 5 + 32, 1)
+            return v
+        return round(v * 9 / 5 + 32)
 
     def _display_min(self) -> int:
         return self._f_to_display(self._min_f)

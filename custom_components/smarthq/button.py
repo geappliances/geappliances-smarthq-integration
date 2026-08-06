@@ -5,6 +5,7 @@ Entity registration is driven entirely by coordinator.data[device_id]["item"]["s
 Service → entity mapping:
   trigger                          → SmartHQTriggerButton   (trigger.do)
   firmware.v1 + CMD_FIRMWARE_UPGRADE → SmartHQFirmwareUpgradeButton
+  temperature (refrigerator.hotwater) → SmartHQHotWaterPresetButton (Cocoa/Tea/Soup)
   coffeebrewer.v1/.v2              → SmartHQCoffeeBrewerButton (start + stop)
   cooking.mode.v1 (with food doms) → SmartHQStartCookingButton (send pending params)
 """
@@ -20,11 +21,13 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME
+from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME, sdev_prefix
 from .dispatcher import SIGNAL_DEVICE_UPDATED
 from .service_registry import (
     TRIGGER_SERVICE,
     FIRMWARE_SERVICE,
+    TEMPERATURE_SERVICE,
+    CMD_TEMPERATURE_SET,
     COFFEEBREWER_V1_SERVICE,
     COFFEEBREWER_V2_SERVICE,
     COOKING_MODE_SERVICE,
@@ -198,6 +201,30 @@ async def async_setup_entry(hass, entry, async_add_entities):
             elif stype == FIRMWARE_SERVICE:
                 _LOGGER.debug("[BUTTON] Blocking firmware trigger for %s", device_id[:8])
                 continue
+
+            # ── refrigerator hot water: beverage temperature presets ────────
+            # There is no separate "start heating" command — sending
+            # temperature.set with the target fahrenheit value both sets the
+            # setpoint and starts heating (confirmed with the App team). These
+            # buttons are a shortcut for the app's Cocoa/Tea/Soup quick-picks.
+            elif (
+                stype == TEMPERATURE_SERVICE
+                and CMD_TEMPERATURE_SET in cmds
+                and "hotwater" in (svc.get("serviceDeviceType") or "")
+            ):
+                prefix = sdev_prefix(svc.get("serviceDeviceType") or "") or "Hot Water"
+                for preset_name, preset_f, icon in (
+                    ("Cocoa", 150, "mdi:coffee"),
+                    ("Tea", 170, "mdi:tea"),
+                    ("Soup", 185, "mdi:pot-steam"),
+                ):
+                    entities.append(SmartHQHotWaterPresetButton(
+                        hass=hass, entry=entry, client=client,
+                        device_id=device_id, service_id=service_id,
+                        dev_name=dev_name, label=f"{prefix} {preset_name} Preset",
+                        fahrenheit=preset_f, icon=icon,
+                        unique_id=make_unique_id(device_id, service_id, f"hotwater_preset_{preset_name.lower()}"),
+                    ))
 
             # ── coffee brewer start/stop ────────────────────────────────────
             elif stype in (COFFEEBREWER_V1_SERVICE, COFFEEBREWER_V2_SERVICE):
@@ -389,6 +416,42 @@ class SmartHQTriggerButton(_SmartHQButtonBase):
             _LOGGER.info("[TRIGGER] ✓ Sent trigger.do for %s", self._attr_name)
         except Exception as exc:
             _LOGGER.error("[TRIGGER] ✗ Failed for %s: %s", self._attr_name, exc)
+
+
+class SmartHQHotWaterPresetButton(_SmartHQButtonBase):
+    """Button that sets the refrigerator hot water dispenser to a fixed preset.
+
+    Mirrors the SmartHQ app's Cocoa/Tea/Soup quick-picks. There is no
+    separate "start heating" command — temperature.set with the target
+    fahrenheit value both stores the setpoint and starts heating.
+    """
+
+    def __init__(self, hass, entry, client, device_id, service_id,
+                 dev_name, label, fahrenheit: int, icon: str, unique_id):
+        super().__init__(hass, entry, device_id, dev_name, unique_id)
+        self._client = client
+        self._service_id = service_id
+        self._fahrenheit = fahrenheit
+        self._attr_name = f"{dev_name} {label}"
+        self._attr_icon = icon
+
+    async def async_press(self) -> None:
+        client = self._client or _bucket(self.hass, self._entry).get("client")
+        if not client:
+            _LOGGER.error("[HOTWATER_PRESET] WebSocket client not available")
+            return
+        snap = _snapshot_for(self.hass, self._entry, self._device_id)
+        svc = (snap.get("services") or {}).get(self._service_id) or {}
+        try:
+            await client.async_send_service_command(
+                device_id=self._device_id,
+                service=svc,
+                command_type=CMD_TEMPERATURE_SET,
+                command_params={"fahrenheit": self._fahrenheit},
+            )
+            _LOGGER.info("[HOTWATER_PRESET] ✓ Sent %s°F for %s", self._fahrenheit, self._attr_name)
+        except Exception as exc:
+            _LOGGER.error("[HOTWATER_PRESET] ✗ Failed for %s: %s", self._attr_name, exc)
 
 
 class SmartHQFirmwareUpgradeButton(_SmartHQButtonBase):

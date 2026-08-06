@@ -342,10 +342,10 @@ SERVICE_MAPPING: dict[str, dict] = {
         "handler": "StandardDryerRackBinarySensor",
     },
 
-    # sensor (read-only)
+    # sensor (read-only) / button (hot water beverage presets, see button.py)
     TEMPERATURE_SERVICE: {
         "type": "standard",
-        "platform": ["sensor", "select"],
+        "platform": ["sensor", "select", "button"],
         "handler": "StandardTemperature",
     },
     INTEGER_SERVICE: {
