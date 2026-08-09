@@ -46,6 +46,9 @@ _LOGGER = logging.getLogger(__name__)
 _COMPRESSOR_POWER_THRESHOLD_W = 120.0
 _ENERGY_SAVER_MODE = "cloud.smarthq.type.thermostatmode.cool.energysaver"
 _NATIVE_AUTO_MODE = "cloud.smarthq.type.thermostatmode.auto"
+_MODEL_MINIMUM_COOL_TEMPERATURES = {
+    "AWCS08WWT": 64.0,
+}
 
 # ---------------------------------------------------------------------------
 # SmartHQ → HA HVAC mode mapping
@@ -139,7 +142,9 @@ async def async_setup_entry(
     existing_uids: set = set()
 
     for device_id, dev_data in coordinator.data.items():
-        dev_name = (dev_data.get("info") or {}).get("nickname") or DEFAULT_NAME
+        dev_info = dev_data.get("info") or {}
+        dev_name = dev_info.get("nickname") or DEFAULT_NAME
+        dev_model = dev_info.get("model") or dev_info.get("deviceType")
         item = dev_data.get("item") or {}
         for svc in (item.get("services") or []):
             stype = svc.get("serviceType") or ""
@@ -167,6 +172,7 @@ async def async_setup_entry(
                         dev_name=dev_name,
                         svc_config=svc.get("config") or {},
                         unique_id=uid,
+                        dev_model=dev_model,
                     ))
 
     _LOGGER.info("[CLIMATE] Registering %d climate entities", len(entities))
@@ -195,6 +201,7 @@ class SmartHQThermostatClimate(ClimateEntity):
         dev_name: str,
         svc_config: dict,
         unique_id: str,
+        dev_model: str | None = None,
     ) -> None:
         self.hass = hass
         self._entry = entry
@@ -220,7 +227,15 @@ class SmartHQThermostatClimate(ClimateEntity):
         self._attr_fan_modes = fan_modes or None
 
         # Temperature range
-        self._attr_min_temp = svc_config.get("coolFahrenheitMinimum") or svc_config.get("heatFahrenheitMinimum") or 60.0
+        advertised_min_temp = (
+            svc_config.get("coolFahrenheitMinimum")
+            or svc_config.get("heatFahrenheitMinimum")
+            or 60.0
+        )
+        model_min_temp = _MODEL_MINIMUM_COOL_TEMPERATURES.get(
+            (dev_model or "").upper(), 0.0
+        )
+        self._attr_min_temp = max(float(advertised_min_temp), model_min_temp)
         self._attr_max_temp = svc_config.get("coolFahrenheitMaximum") or svc_config.get("heatFahrenheitMaximum") or 86.0
         self._attr_target_temperature_step = 1.0
 
@@ -391,6 +406,7 @@ class SmartHQThermostatClimate(ClimateEntity):
         temp = kwargs.get(ATTR_TEMPERATURE)
         if temp is None:
             return
+        temp = max(float(temp), self.min_temp)
         mode = self.hvac_mode
         params: dict = {}
         if mode == HVACMode.HEAT:
