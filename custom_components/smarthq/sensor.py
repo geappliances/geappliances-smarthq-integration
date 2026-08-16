@@ -620,6 +620,12 @@ def _integer_units_to_ha(int_units: str) -> tuple:
     return _map.get(key, (None, None))
 
 
+# integerUnits tokens that carry a unitless numeric value (not a text enum).
+# These produce numeric sensors (state_class MEASUREMENT) so HA graphs the
+# value instead of rendering it as a string.
+_UNITLESS_INTEGER_UNITS: frozenset[str] = frozenset({"level", "count", "unitless"})
+
+
 def _meter_units_to_ha(meter_units: str, dom: str) -> tuple:
     """Map METER_UNITS string (+ domainType fallback) to (ha_unit, SensorDeviceClass).
 
@@ -685,6 +691,7 @@ class SmartHQServiceSensor(SensorEntity):
         entity_category=None,
         enabled_default: bool = True,
         translation_key: Optional[str] = None,
+        state_class=None,
     ) -> None:
         self.hass = hass
         self._entry = entry
@@ -704,6 +711,8 @@ class SmartHQServiceSensor(SensorEntity):
             self._attr_device_class = device_class
         if unit is not None:
             self._attr_native_unit_of_measurement = unit
+        if state_class is not None:
+            self._attr_state_class = state_class
         self._attr_unique_id = unique_id
         if entity_category is not None:
             self._attr_entity_category = entity_category
@@ -1643,6 +1652,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     int_units = cfg.get("integerUnits") or ""
                     label_base = cfg.get("label") or _camel_to_words(dom.split(".")[-1])
                     ha_unit, dev_class = _integer_units_to_ha(int_units)
+                    # Unitless integer readings (level/count/unitless) carry no
+                    # unit or device class; mark them as MEASUREMENT so HA treats
+                    # the value as numeric and graphs it instead of a string.
+                    state_class = (
+                        SensorStateClass.MEASUREMENT
+                        if int_units.split(".")[-1] in _UNITLESS_INTEGER_UNITS
+                        else None
+                    )
                     uid = make_unique_id(device_id, service_id, "integer")
                     if uid not in existing_uids:
                         entities.append(SmartHQServiceSensor(
@@ -1650,6 +1667,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                             label_base, "value",
                             dev_class, ha_unit, uid,
                             translation_key=_make_translation_key(label_base),
+                            state_class=state_class,
                         ))
                         existing_uids.add(uid)
 
