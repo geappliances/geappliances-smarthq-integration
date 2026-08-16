@@ -620,12 +620,6 @@ def _integer_units_to_ha(int_units: str) -> tuple:
     return _map.get(key, (None, None))
 
 
-# integerUnits tokens that carry a unitless numeric value (not a text enum).
-# These produce numeric sensors (state_class MEASUREMENT) so HA graphs the
-# value instead of rendering it as a string.
-_UNITLESS_INTEGER_UNITS: frozenset[str] = frozenset({"level", "count", "unitless"})
-
-
 def _meter_units_to_ha(meter_units: str, dom: str) -> tuple:
     """Map METER_UNITS string (+ domainType fallback) to (ha_unit, SensorDeviceClass).
 
@@ -1652,12 +1646,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     int_units = cfg.get("integerUnits") or ""
                     label_base = cfg.get("label") or _camel_to_words(dom.split(".")[-1])
                     ha_unit, dev_class = _integer_units_to_ha(int_units)
-                    # Unitless integer readings (level/count/unitless) carry no
-                    # unit or device class; mark them as MEASUREMENT so HA treats
-                    # the value as numeric and graphs it instead of a string.
+                    # Integer services always carry a numeric value. When no unit
+                    # or device class could be derived (unitless readings such as
+                    # "level"/"count"/"unitless" or an absent unit), mark the
+                    # sensor as a unitless MEASUREMENT so HA graphs the number
+                    # instead of rendering it as a categorical string.
                     state_class = (
                         SensorStateClass.MEASUREMENT
-                        if int_units.split(".")[-1] in _UNITLESS_INTEGER_UNITS
+                        if ha_unit is None and dev_class is None
                         else None
                     )
                     uid = make_unique_id(device_id, service_id, "integer")
