@@ -85,6 +85,7 @@ class SmartHQWebsocket:
         backoff = 1
         consecutive_failures = 0
         max_retries = 3
+        notified_failure = False
         
         while not self._stopped.is_set():
             try:
@@ -94,8 +95,16 @@ class SmartHQWebsocket:
                 async with self._session.ws_connect(endpoint, heartbeat=PING_IDLE_SECONDS) as ws:
                     self._ws = ws
                     _LOGGER.info("SmartHQ WS connected")
+                    if notified_failure:
+                        with contextlib.suppress(Exception):
+                            await self.hass.services.async_call(
+                                "persistent_notification", "dismiss",
+                                {"notification_id": "smarthq_websocket_failure"},
+                                blocking=False,
+                            )
                     backoff = 1
                     consecutive_failures = 0  # Reset on successful connection
+                    notified_failure = False
 
                     await self._subscribe_all(ws)
 
@@ -131,8 +140,8 @@ class SmartHQWebsocket:
                 break
             except Exception as e:
                 consecutive_failures += 1
-                
-                if consecutive_failures >= max_retries:
+
+                if consecutive_failures >= max_retries and not notified_failure:
                     error_msg = (
                         f"SmartHQ WebSocket connection failed {consecutive_failures} times.\n\n"
                         f"Last error: {str(e)}\n\n"
@@ -140,18 +149,20 @@ class SmartHQWebsocket:
                         f"- Internet connection\n"
                         f"- SmartHQ service status\n"
                         f"- OAuth2 credentials validity\n\n"
-                        f"The integration will stop attempting to reconnect. "
-                        f"Please restart Home Assistant or reload the SmartHQ integration to retry."
+                        f"The integration will keep retrying in the background with "
+                        f"increasing delay (up to {60}s). This notification will not repeat "
+                        f"until the connection recovers."
                     )
-                    
+
                     _LOGGER.error(
-                        "SmartHQ WS: Max retry limit (%d) reached. Stopping reconnection attempts. Error: %s",
-                        max_retries, e
+                        "SmartHQ WS: %d consecutive failures. Will keep retrying in the "
+                        "background. Last error: %s",
+                        consecutive_failures, e
                     )
-                    
-                    # Send persistent notification to Home Assistant UI
+
+                    # Send persistent notification to Home Assistant UI (once per outage)
                     try:
-                        await self._hass.services.async_call(
+                        await self.hass.services.async_call(
                             "persistent_notification", "create",
                             {
                                 "title": "⚠️ SmartHQ Connection Failed",
@@ -162,12 +173,12 @@ class SmartHQWebsocket:
                         )
                     except Exception as notification_error:
                         _LOGGER.error("Failed to create notification: %s", notification_error)
-                    
-                    break  # Stop reconnection loop
-                
+
+                    notified_failure = True
+
                 _LOGGER.warning(
-                    "WS error (attempt %d/%d): %s; reconnect in %s sec",
-                    consecutive_failures, max_retries, e, backoff
+                    "WS error (attempt %d): %s; reconnect in %s sec",
+                    consecutive_failures, e, backoff
                 )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)
