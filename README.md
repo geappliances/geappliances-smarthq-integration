@@ -102,7 +102,7 @@ Before adding the integration, you need to obtain OAuth2 credentials from SmartH
 <img width="944" height="585" alt="image" src="https://github.com/user-attachments/assets/65e43b22-27cc-499d-bab4-097d6e0d70cb" />
 
 #### Step 2: Configure Your App
-1. Enter a **unique Machine name** (e.g., `homeassistant-yourname` or `ha-<something-unique>`)
+1. Enter a **unique Machine name** (e.g., `homeassistant_yourname` or `ha_<something_unique>`)
    > ⚠️ **Do NOT use the plain name `homeassistant`.** The Machine name must be globally unique on the SmartHQ Developer Portal. A name that is already taken (such as `homeassistant`) causes the OAuth login to fail with an `OAuth2.0 Error` / `User session expired` message. Pick your own unique name.
 2. Set **Callback URL** to: `https://my.home-assistant.io/redirect/oauth`
 3. Click **"ADD APP"**
