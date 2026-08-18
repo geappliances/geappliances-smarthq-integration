@@ -1247,10 +1247,12 @@ _STANDARD_SENSOR_SPECS: dict[str, list[_SF]] = {
     # Keys match the live API field names (secondsRemaining/secondsElapsed, not
     # timeRemaining/timeElapsed) so this sensor actually receives data and so
     # its (service_id, key) pair lines up with the _DYN_KEYS entries below for
-    # dedup purposes (see #48 follow-up).
+    # dedup purposes (see #48 follow-up). Labels are pinned explicitly so the
+    # payload key can differ from the user-facing name (_camel_to_words(key)
+    # would otherwise render "Seconds Remaining").
     CYCLETIMER_SERVICE: [
-        _SF("secondsRemaining", "timer_remaining", "S", dev_cls=SensorDeviceClass.DURATION, unit="s"),
-        _SF("secondsElapsed",   "timer_elapsed",   "S", dev_cls=SensorDeviceClass.DURATION, unit="s"),
+        _SF("secondsRemaining", "timer_remaining", "S", dev_cls=SensorDeviceClass.DURATION, unit="s", label="Time Remaining"),
+        _SF("secondsElapsed",   "timer_elapsed",   "S", dev_cls=SensorDeviceClass.DURATION, unit="s", label="Time Elapsed"),
     ],
     # ── battery ────────────────────────────────────────────────────────────
     BATTERY_SERVICE: [
