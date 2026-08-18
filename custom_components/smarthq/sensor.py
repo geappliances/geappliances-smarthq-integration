@@ -1244,9 +1244,13 @@ _STANDARD_SENSOR_SPECS: dict[str, list[_SF]] = {
     # Firmware version/status sensors are blocked; not exposed to users.
     # FIRMWARE_SERVICE: [...],
     # ── cycletimer ─────────────────────────────────────────────────────────
+    # Keys match the live API field names (secondsRemaining/secondsElapsed, not
+    # timeRemaining/timeElapsed) so this sensor actually receives data and so
+    # its (service_id, key) pair lines up with the _DYN_KEYS entries below for
+    # dedup purposes (see #48 follow-up).
     CYCLETIMER_SERVICE: [
-        _SF("timeRemaining", "timer_remaining", "S", dev_cls=SensorDeviceClass.DURATION, unit="s"),
-        _SF("timeElapsed",   "timer_elapsed",   "S", dev_cls=SensorDeviceClass.DURATION, unit="s"),
+        _SF("secondsRemaining", "timer_remaining", "S", dev_cls=SensorDeviceClass.DURATION, unit="s"),
+        _SF("secondsElapsed",   "timer_elapsed",   "S", dev_cls=SensorDeviceClass.DURATION, unit="s"),
     ],
     # ── battery ────────────────────────────────────────────────────────────
     BATTERY_SERVICE: [
