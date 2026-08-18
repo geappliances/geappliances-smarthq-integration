@@ -892,9 +892,14 @@ class SmartHQRawTempSensor(SmartHQServiceSensor):
 
 
 class SmartHQMeterSensor(SmartHQServiceSensor):
-    """Sensor for meter services (cumulative energy, water, etc.)."""
+    """Sensor for meter services (cumulative energy, water, etc.).
 
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    Only energy/water meterValues are actually cumulative; voltage/power/current
+    are instantaneous readings and must use MEASUREMENT, not TOTAL_INCREASING —
+    HA logs a state_class validation warning otherwise (#51).
+    """
+
+    _CUMULATIVE_DEVICE_CLASSES = frozenset({SensorDeviceClass.ENERGY, SensorDeviceClass.WATER})
 
     def __init__(
         self,
@@ -906,6 +911,11 @@ class SmartHQMeterSensor(SmartHQServiceSensor):
             hass, entry, device_id, service_id, dev_name,
             label, "meterValue", device_class, unit, unique_id,
             translation_key=translation_key,
+        )
+        self._attr_state_class = (
+            SensorStateClass.TOTAL_INCREASING
+            if device_class in self._CUMULATIVE_DEVICE_CLASSES
+            else SensorStateClass.MEASUREMENT
         )
 
     @property
