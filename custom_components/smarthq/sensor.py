@@ -463,7 +463,6 @@ class SmartHQSnapshotSensor(SensorEntity):
         )
         self._attr_unique_id = f"{DOMAIN}:{device_id}:sensor:{service_id}:{state_key}"
         self._attr_has_entity_name = True
-        self._attr_name = None
 
     def _get_service_meta(self):
         """Return (service_state, service_type, domain_type)."""
@@ -698,7 +697,6 @@ class SmartHQServiceSensor(SensorEntity):
             native_unit_of_measurement=unit,
             entity_category=entity_category,
         )
-        self._attr_name = None
         # Only set _attr_ when a value is given; None would shadow subclass properties.
         if device_class is not None:
             self._attr_device_class = device_class
@@ -1006,11 +1004,21 @@ _LAUNDRY_STATE_ICONS: dict[str, str] = {
 # Discovery
 # ---------------------------------------------------------------------------
 
-def _iter_dynamic_sensors(hass: HomeAssistant, entry: ConfigEntry, device_id: str) -> Iterable[SmartHQSnapshotSensor]:
+def _iter_dynamic_sensors(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    device_id: str,
+    exclude_pairs: Optional[set] = None,
+) -> Iterable[SmartHQSnapshotSensor]:
+    """exclude_pairs: (service_id, state_key) already created by Source 1 (see
+    async_setup_entry) -- several _DYN_KEYS entries below have no serviceType
+    restriction and would otherwise duplicate those sensors (see #48).
+    """
     snap = _snapshot_for(hass, entry, device_id)
     services: Dict[str, Dict[str, Any]] = snap.get("services") or {}
     if not services:
         return []
+    exclude_pairs = exclude_pairs or set()
 
     # Build sid -> (serviceType, domainType) directly from services_map so that
     # services sharing the same (stype, domain) but different serviceDeviceType
@@ -1146,7 +1154,7 @@ def _iter_dynamic_sensors(hass: HomeAssistant, entry: ConfigEntry, device_id: st
             continue
 
         pair = (sid, key)
-        if pair in added_pairs:
+        if pair in added_pairs or pair in exclude_pairs:
             continue
         result.append(
             SmartHQSnapshotSensor(
@@ -1196,7 +1204,7 @@ def _iter_dynamic_sensors(hass: HomeAssistant, entry: ConfigEntry, device_id: st
             continue
 
         pair = (sid, key)
-        if pair in added_pairs:
+        if pair in added_pairs or pair in exclude_pairs:
             continue
         result.append(
             SmartHQSnapshotSensor(
@@ -1536,6 +1544,7 @@ def _build_standard_sensors(
     dev_name: str,
     stype: str,
     existing_uids: set[str],
+    used_pairs: Optional[set] = None,
 ) -> list[SensorEntity]:
     """Create sensor entities for a standard (data-driven) serviceType."""
     result: list[SensorEntity] = []
@@ -1567,6 +1576,8 @@ def _build_standard_sensors(
             )
         result.append(entity)
         existing_uids.add(uid)
+        if used_pairs is not None:
+            used_pairs.add((service_id, f.key))
     return result
 
 
@@ -1580,6 +1591,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
        that use device-specific state keys outside the generic service schema.
     """
     entities: List[SensorEntity] = []
+    # (service_id, state_key) pairs Source 1 has produced, so the generic
+    # (no serviceType restriction) _DYN_KEYS entries in Source 2 below don't
+    # recreate them under a different unique_id format (see #48).
+    used_pairs: set = set()
 
     # ── Source 1: coordinator service-based sensors ───────────────────────────
     bucket = hass.data.get(DOMAIN, {}).get(entry.entry_id) or {}
@@ -1637,6 +1652,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                             label, uid,
                         ))
                         existing_uids.add(uid)
+                        used_pairs.add((service_id, "fahrenheit"))
 
                 # ── integer sensor (read-only) ──────────────────────────────
                 elif stype == INTEGER_SERVICE and CMD_INTEGER_SET not in cmds:
@@ -1652,6 +1668,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                             translation_key=_make_translation_key(label_base),
                         ))
                         existing_uids.add(uid)
+                        used_pairs.add((service_id, "value"))
 
                 # ── meter sensor ────────────────────────────────────────────
                 elif stype == METER_SERVICE:
@@ -1692,6 +1709,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                             translation_key=_make_translation_key(label_base),
                         ))
                         existing_uids.add(uid)
+                        used_pairs.add((service_id, "value"))
 
                 # ── string sensor ───────────────────────────────────────────
                 elif stype == STRING_SERVICE and CMD_STRING_SET not in cmds:
@@ -1711,6 +1729,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 elif stype in _STANDARD_SENSOR_SPECS:
                     entities.extend(_build_standard_sensors(
                         hass, entry, device_id, service_id, dev_name, stype, existing_uids,
+                        used_pairs,
                     ))
 
 
@@ -1720,7 +1739,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     # state keys not represented by the generic service schema.
     snapshot_entities: List[SensorEntity] = []
     for did in list(_store(hass, entry).keys()):
-        snapshot_entities.extend(list(_iter_dynamic_sensors(hass, entry, did)))
+        snapshot_entities.extend(list(_iter_dynamic_sensors(hass, entry, did, used_pairs)))
 
     all_entities = entities + snapshot_entities
     if all_entities:
