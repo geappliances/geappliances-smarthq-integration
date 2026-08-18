@@ -504,24 +504,30 @@ class SmartHQCoffeeBrewerButton(_SmartHQButtonBase):
         command: Dict[str, Any] = {"commandType": self._command_type}
 
         if self._button_type == "start":
+            # Only include parameters the user actually touched via the
+            # coffee_* selects, so untouched fields fall back to the
+            # device's own defaults instead of a hardcoded value (#52).
             settings = (bucket.get("coffee_brewer_settings") or {}).get(self._device_id, {})
-            strength_map = {"Light": 0, "Medium": 1, "Bold": 2}
-            size_str = settings.get("size", "12 Oz")
-            temp_str = settings.get("temperature", "90°C")
-            try:
-                volume = float(size_str.split()[0]) if size_str != "Carafe" else 14.0
-            except (ValueError, IndexError):
-                volume = 12.0
-            try:
-                temp = float(temp_str.replace("°C", ""))
-            except ValueError:
-                temp = 90.0
-            command.update({
-                "strength": strength_map.get(settings.get("strength", "Medium"), 1),
-                "volumeSingle": volume,
-                "volumeUnits": "cloud.smarthq.type.volumeunits.fluidounces",
-                "temperatureCelsius": temp,
-            })
+            if "strength" in settings:
+                command["strength"] = settings["strength"]
+            if "size_value" in settings:
+                size_kind = settings.get("size_kind", "carafe")
+                volume_key = "volumeCarafe" if size_kind == "carafe" else "volumeSingle"
+                command[volume_key] = settings["size_value"]
+                command["volumeUnits"] = settings.get(
+                    "size_units", "cloud.smarthq.type.volumeunits.fluidounces"
+                )
+            if "temperature" in settings:
+                try:
+                    command["temperatureCelsius"] = float(settings["temperature"].replace("°C", ""))
+                except (ValueError, AttributeError):
+                    pass
+            if "bloom_dwell" in settings:
+                command["bloomDwellTimeSeconds"] = settings["bloom_dwell"]
+            if "bloom_pump" in settings:
+                command["bloomPumpRunTimeSeconds"] = settings["bloom_pump"]
+            if "grind" in settings:
+                command["grindTimeDelta"] = settings["grind"]
 
         # Retrieve service metadata from WS snapshot for the API call
         snap = _snapshot_for(self.hass, self._entry, self._device_id)
