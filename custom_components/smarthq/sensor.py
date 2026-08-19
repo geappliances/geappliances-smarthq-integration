@@ -684,6 +684,7 @@ class SmartHQServiceSensor(SensorEntity):
         entity_category=None,
         enabled_default: bool = True,
         translation_key: Optional[str] = None,
+        state_class=None,
     ) -> None:
         self.hass = hass
         self._entry = entry
@@ -702,6 +703,8 @@ class SmartHQServiceSensor(SensorEntity):
             self._attr_device_class = device_class
         if unit is not None:
             self._attr_native_unit_of_measurement = unit
+        if state_class is not None:
+            self._attr_state_class = state_class
         self._attr_unique_id = unique_id
         if entity_category is not None:
             self._attr_entity_category = entity_category
@@ -1665,6 +1668,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     int_units = cfg.get("integerUnits") or ""
                     label_base = cfg.get("label") or _camel_to_words(dom.split(".")[-1])
                     ha_unit, dev_class = _integer_units_to_ha(int_units)
+                    # Integer services always carry a numeric value. When no unit
+                    # or device class could be derived (unitless readings such as
+                    # "level"/"count"/"unitless" or an absent unit), mark the
+                    # sensor as a unitless MEASUREMENT so HA graphs the number
+                    # instead of rendering it as a categorical string.
+                    state_class = (
+                        SensorStateClass.MEASUREMENT
+                        if ha_unit is None and dev_class is None
+                        else None
+                    )
                     uid = make_unique_id(device_id, service_id, "integer")
                     if uid not in existing_uids:
                         entities.append(SmartHQServiceSensor(
@@ -1672,6 +1685,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                             label_base, "value",
                             dev_class, ha_unit, uid,
                             translation_key=_make_translation_key(label_base),
+                            state_class=state_class,
                         ))
                         existing_uids.add(uid)
                         used_pairs.add((service_id, "value"))
