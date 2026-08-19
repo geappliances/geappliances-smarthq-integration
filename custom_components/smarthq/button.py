@@ -501,6 +501,9 @@ class SmartHQCoffeeBrewerButton(_SmartHQButtonBase):
             _LOGGER.error("[COFFEE] API not available")
             return
 
+        # Retrieve service metadata before building parameterized commands.
+        snap = _snapshot_for(self.hass, self._entry, self._device_id)
+        svc = (snap.get("services") or {}).get(self._service_id) or {}
         command: Dict[str, Any] = {"commandType": self._command_type}
 
         if self._button_type == "start":
@@ -522,16 +525,25 @@ class SmartHQCoffeeBrewerButton(_SmartHQButtonBase):
                     command["temperatureCelsius"] = float(settings["temperature"].replace("°C", ""))
                 except (ValueError, AttributeError):
                     pass
-            if "bloom_dwell" in settings:
-                command["bloomDwellTimeSeconds"] = settings["bloom_dwell"]
-            if "bloom_pump" in settings:
-                command["bloomPumpRunTimeSeconds"] = settings["bloom_pump"]
+            if "temperature_f" in settings:
+                command["temperatureFahrenheit"] = settings["temperature_f"]
+                command.pop("temperatureCelsius", None)
+            if "bloom" in settings:
+                cfg = svc.get("config") or {}
+                if cfg.get("bloomDwellTimeSupported") in {
+                    "cloud.smarthq.type.parameter.required",
+                    "cloud.smarthq.type.parameter.optional",
+                    "cloud.smarthq.type.parameter.defaulted",
+                }:
+                    command["bloomDwellTimeSeconds"] = settings["bloom"]
+                if cfg.get("bloomPumpRunTimeSupported") in {
+                    "cloud.smarthq.type.parameter.required",
+                    "cloud.smarthq.type.parameter.optional",
+                    "cloud.smarthq.type.parameter.defaulted",
+                }:
+                    command["bloomPumpRunTimeSeconds"] = settings["bloom"]
             if "grind" in settings:
                 command["grindTimeDelta"] = settings["grind"]
-
-        # Retrieve service metadata from WS snapshot for the API call
-        snap = _snapshot_for(self.hass, self._entry, self._device_id)
-        svc = (snap.get("services") or {}).get(self._service_id) or {}
 
         await api.async_send_command(
             device_id=self._device_id,
