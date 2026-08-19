@@ -501,31 +501,49 @@ class SmartHQCoffeeBrewerButton(_SmartHQButtonBase):
             _LOGGER.error("[COFFEE] API not available")
             return
 
+        # Retrieve service metadata before building parameterized commands.
+        snap = _snapshot_for(self.hass, self._entry, self._device_id)
+        svc = (snap.get("services") or {}).get(self._service_id) or {}
         command: Dict[str, Any] = {"commandType": self._command_type}
 
         if self._button_type == "start":
+            # Only include parameters the user actually touched via the
+            # coffee_* selects, so untouched fields fall back to the
+            # device's own defaults instead of a hardcoded value (#52).
             settings = (bucket.get("coffee_brewer_settings") or {}).get(self._device_id, {})
-            strength_map = {"Light": 0, "Medium": 1, "Bold": 2}
-            size_str = settings.get("size", "12 Oz")
-            temp_str = settings.get("temperature", "90°C")
-            try:
-                volume = float(size_str.split()[0]) if size_str != "Carafe" else 14.0
-            except (ValueError, IndexError):
-                volume = 12.0
-            try:
-                temp = float(temp_str.replace("°C", ""))
-            except ValueError:
-                temp = 90.0
-            command.update({
-                "strength": strength_map.get(settings.get("strength", "Medium"), 1),
-                "volumeSingle": volume,
-                "volumeUnits": "cloud.smarthq.type.volumeunits.fluidounces",
-                "temperatureCelsius": temp,
-            })
-
-        # Retrieve service metadata from WS snapshot for the API call
-        snap = _snapshot_for(self.hass, self._entry, self._device_id)
-        svc = (snap.get("services") or {}).get(self._service_id) or {}
+            if "strength" in settings:
+                command["strength"] = settings["strength"]
+            if "size_value" in settings:
+                size_kind = settings.get("size_kind", "carafe")
+                volume_key = "volumeCarafe" if size_kind == "carafe" else "volumeSingle"
+                command[volume_key] = settings["size_value"]
+                command["volumeUnits"] = settings.get(
+                    "size_units", "cloud.smarthq.type.volumeunits.fluidounces"
+                )
+            if "temperature" in settings:
+                try:
+                    command["temperatureCelsius"] = float(settings["temperature"].replace("°C", ""))
+                except (ValueError, AttributeError):
+                    pass
+            if "temperature_f" in settings:
+                command["temperatureFahrenheit"] = settings["temperature_f"]
+                command.pop("temperatureCelsius", None)
+            if "bloom" in settings:
+                cfg = svc.get("config") or {}
+                if cfg.get("bloomDwellTimeSupported") in {
+                    "cloud.smarthq.type.parameter.required",
+                    "cloud.smarthq.type.parameter.optional",
+                    "cloud.smarthq.type.parameter.defaulted",
+                }:
+                    command["bloomDwellTimeSeconds"] = settings["bloom"]
+                if cfg.get("bloomPumpRunTimeSupported") in {
+                    "cloud.smarthq.type.parameter.required",
+                    "cloud.smarthq.type.parameter.optional",
+                    "cloud.smarthq.type.parameter.defaulted",
+                }:
+                    command["bloomPumpRunTimeSeconds"] = settings["bloom"]
+            if "grind" in settings:
+                command["grindTimeDelta"] = settings["grind"]
 
         await api.async_send_command(
             device_id=self._device_id,

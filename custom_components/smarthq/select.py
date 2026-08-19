@@ -11,6 +11,7 @@ Service → entity mapping:
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, Dict, List, Optional
 
 from homeassistant.components.select import SelectEntity
@@ -304,12 +305,25 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 cooking_mode_svcs.append(svc)
 
             # ── coffee brewer selects ───────────────────────────────────────
+            # strength/size/temperature always exist; bloom/grind are only
+            # added when the device's config declares them supported (#52).
             elif stype in (COFFEEBREWER_V1_SERVICE, COFFEEBREWER_V2_SERVICE):
-                for select_type in ("strength", "size", "temperature"):
+                select_types = ["strength", "size", "temperature"]
+                carafe_supported = cfg.get("volumeCarafeSupported") in COOKING_PARAM_SUPPORTED
+                single_supported = cfg.get("volumeSingleSupported") in COOKING_PARAM_SUPPORTED
+                if carafe_supported and single_supported:
+                    select_types.append("size_mode")
+                if cfg.get("bloomDwellTimeSupported") in COOKING_PARAM_SUPPORTED:
+                    select_types.append("bloom")
+                elif cfg.get("bloomPumpRunTimeSupported") in COOKING_PARAM_SUPPORTED:
+                    select_types.append("bloom")
+                if cfg.get("grindTimeDeltaSupported") in COOKING_PARAM_SUPPORTED:
+                    select_types.append("grind")
+                for select_type in select_types:
                     entities.append(SmartHQCoffeeBrewerSelect(
                         hass=hass, entry=entry,
                         device_id=device_id, service_id=service_id,
-                        dev_name=dev_name, select_type=select_type,
+                        dev_name=dev_name, select_type=select_type, cfg=cfg,
                         unique_id=make_unique_id(device_id, service_id, f"coffee_{select_type}"),
                     ))
 
@@ -1396,44 +1410,112 @@ class SmartHQSmokeLevelSelect(_SmartHQCookParamSelectBase):
 
 
 class SmartHQCoffeeBrewerSelect(SelectEntity):
-    """Coffee Brewer parameter select (strength / size / temperature).
+    """Coffee Brewer parameter select (strength / size / temperature / bloom / grind).
 
-    Temperature options and display values are dynamic: they follow the
-    device's own temperatureunits setting (same as other temperature entities).
+    Options are derived from the service's config (strengthMinimum/Maximum,
+    volumeCarafe*/volumeSingle*, temperatureFahrenheit*/temperatureCelsius*,
+    bloomDwellTimeSeconds*, bloomPumpRunTimeSeconds*, grindTimeDelta*) instead
+    of a fixed hardcoded list, so the full device-supported range is exposed
+    (see #52 -- missing Gold/Extra Bold strengths, 205°F temperature cap,
+    no cup-count sizing, missing Bloom/Grind Time).
+
+    Falls back to the previous hardcoded ranges when a device's config omits
+    these fields entirely, for backward compatibility.
+
     Temperature is always stored internally in °C to match the API's
-    temperatureCelsius parameter in the start command.
+    temperatureCelsius start-command parameter. Size stores the raw numeric
+    value plus the actual volumeUnits enum string and whether it targets
+    volumeCarafe or volumeSingle, so the start button can send it back verbatim.
     """
 
     _attr_should_poll = False
     _attr_has_entity_name = True
 
-    _STRENGTH_OPTIONS = ["Light", "Medium", "Bold"]
-    _SIZE_OPTIONS = ["10 Oz", "12 Oz", "14 Oz", "Carafe"]
-    _TEMP_C_RANGE = list(range(85, 96))  # 85–95°C
+    _STRENGTH_LABELS_BY_COUNT = {
+        3: ["Light", "Medium", "Bold"],
+        5: ["Light", "Medium", "Bold", "Gold", "Extra Bold"],
+    }
+    _VOLUME_UNIT_ABBR = {
+        "cloud.smarthq.type.volumeunits.cups": "Cups",
+        "cloud.smarthq.type.volumeunits.fluidounces": "Oz",
+        "cloud.smarthq.type.volumeunits.milliliters": "mL",
+    }
+    _TEMP_F_RANGE_DEFAULT = list(range(185, 206, 5))
 
     def __init__(self, hass, entry, device_id, service_id,
-                 dev_name, select_type, unique_id):
+                 dev_name, select_type, unique_id, cfg: Optional[dict] = None):
         self.hass = hass
         self._entry = entry
         self._device_id = device_id
         self._service_id = service_id
         self._select_type = select_type
         self._attr_unique_id = unique_id
+        cfg = cfg or {}
+        self._cfg = cfg
 
         if select_type == "strength":
             self._attr_name = f"{dev_name} Brew Strength"
-            self._attr_options = self._STRENGTH_OPTIONS
             self._attr_icon = "mdi:coffee-maker"
-            self._default = "Medium"
+            lo = int(cfg.get("strengthMinimum") if cfg.get("strengthMinimum") is not None else 0)
+            hi = int(cfg.get("strengthMaximum") if cfg.get("strengthMaximum") is not None else 2)
+            self._strength_values = list(range(lo, hi + 1))
+            labels = self._STRENGTH_LABELS_BY_COUNT.get(len(self._strength_values))
+            self._strength_labels = labels or [str(v) for v in self._strength_values]
+            self._attr_options = self._strength_labels
+            self._default = self._strength_labels[len(self._strength_labels) // 2]
+        elif select_type == "size_mode":
+            self._attr_name = f"{dev_name} Brew Size Mode"
+            self._attr_icon = "mdi:cup-outline"
+            self._size_modes = ["carafe", "single"]
+            self._attr_options = ["Carafe", "Single Serve"]
+            self._default = "Carafe"
         elif select_type == "size":
             self._attr_name = f"{dev_name} Brew Size"
-            self._attr_options = self._SIZE_OPTIONS
             self._attr_icon = "mdi:cup"
-            self._default = "12 Oz"
-        else:  # temperature
+            self._size_modes = []
+            if cfg.get("volumeCarafeSupported") in COOKING_PARAM_SUPPORTED:
+                self._size_modes.append("carafe")
+            if cfg.get("volumeSingleSupported") in COOKING_PARAM_SUPPORTED:
+                self._size_modes.append("single")
+            if not self._size_modes:
+                self._size_modes = ["carafe"]
+            self._default = self._size_options(self._size_modes[0])[len(self._size_options(self._size_modes[0])) // 2]
+        elif select_type == "temperature":
             self._attr_name = f"{dev_name} Brew Temperature"
             self._attr_icon = "mdi:thermometer"
-            self._default = "90°C"  # internal storage always °C
+            f_lo = cfg.get("temperatureFahrenheitMinimum")
+            f_hi = cfg.get("temperatureFahrenheitMaximum")
+            if f_lo is None or f_hi is None:
+                c_lo = cfg.get("temperatureCelsiusMinimum", 85)
+                c_hi = cfg.get("temperatureCelsiusMaximum", 95)
+                f_lo = float(c_lo) * 9 / 5 + 32
+                f_hi = float(c_hi) * 9 / 5 + 32
+            first = int(math.ceil(float(f_lo) / 5) * 5)
+            last = int(math.floor(float(f_hi) / 5) * 5)
+            self._temp_f_values = list(range(first, last + 1, 5)) or self._TEMP_F_RANGE_DEFAULT
+            self._default = self._display_temperature(self._temp_f_values[len(self._temp_f_values) // 2])
+        elif select_type == "bloom":
+            self._attr_name = f"{dev_name} Bloom Time"
+            self._attr_icon = "mdi:timer-sand"
+            mins = []
+            maxes = []
+            for prefix in ("bloomDwellTimeSeconds", "bloomPumpRunTimeSeconds"):
+                if cfg.get(f"{prefix}Supported") in COOKING_PARAM_SUPPORTED:
+                    mins.append(int(cfg.get(f"{prefix}Minimum") or 5))
+                    maxes.append(int(cfg.get(f"{prefix}Maximum") or 30))
+            lo = max(mins or [5])
+            hi = min(maxes or [30])
+            self._bloom_values = list(range(int(math.ceil(lo / 5) * 5), int(math.floor(hi / 5) * 5) + 1, 5))
+            self._attr_options = ["Default"] + [f"{v}s" for v in self._bloom_values]
+            self._default = "Default"
+        else:  # grind
+            self._attr_name = f"{dev_name} Grind Time"
+            self._attr_icon = "mdi:coffee-outline"
+            lo = int(cfg.get("grindTimeDeltaMinimum") or 0)
+            hi = int(cfg.get("grindTimeDeltaMaximum") or 0)
+            self._int_values = list(range(lo, hi + 1))
+            self._attr_options = [str(v) for v in self._int_values]
+            self._default = self._attr_options[len(self._attr_options) // 2] if self._attr_options else "0"
 
     def _is_f(self) -> bool:
         from .sensor import _device_temp_is_f
@@ -1442,52 +1524,112 @@ class SmartHQCoffeeBrewerSelect(SelectEntity):
     def _settings(self) -> dict:
         bucket = _bucket(self.hass, self._entry)
         settings = bucket.setdefault("coffee_brewer_settings", {})
-        return settings.setdefault(self._device_id, {
-            "strength": "Medium", "size": "12 Oz", "temperature": "90°C"
-        })
+        return settings.setdefault(self._device_id, {})
+
+    def _size_profile(self, mode: str) -> tuple[list[float], str]:
+        prefix = "volumeCarafe" if mode == "carafe" else "volumeSingle"
+        minimum = self._cfg.get(f"{prefix}Minimum")
+        maximum = self._cfg.get(f"{prefix}Maximum")
+        if minimum is None or maximum is None:
+            return [10.0, 12.0, 14.0], "cloud.smarthq.type.volumeunits.fluidounces"
+        values = []
+        value = float(minimum)
+        while value <= float(maximum) + 1e-9:
+            values.append(round(value, 1))
+            value += 1.0
+        return values, self._cfg.get(f"{prefix}Units") or "cloud.smarthq.type.volumeunits.fluidounces"
+
+    def _size_options(self, mode: str) -> list[str]:
+        values, units = self._size_profile(mode)
+        unit = self._VOLUME_UNIT_ABBR.get(units, "")
+        return [f"{value:g} {unit}".strip() for value in values]
+
+    def _display_temperature(self, fahrenheit: int) -> str:
+        if self._is_f():
+            return f"{fahrenheit}°F"
+        return f"{round((fahrenheit - 32) * 5 / 9)}°C"
 
     @property
     def options(self) -> list[str]:
         """Return temperature options in the device's current unit."""
-        if self._select_type != "temperature":
+        if self._select_type == "size_mode":
+            return self._attr_options
+        if self._select_type == "size":
+            mode = self._settings().get("size_mode", self._size_modes[0])
+            return self._size_options(mode)
+        if self._select_type not in ("temperature", "bloom"):
             return self._attr_options
         if self._is_f():
-            return [f"{round(t * 9 / 5 + 32)}°F" for t in self._TEMP_C_RANGE]
-        return [f"{t}°C" for t in self._TEMP_C_RANGE]
+            return [f"{value}°F" for value in self._temp_f_values] if self._select_type == "temperature" else self._attr_options
+        return [f"{round((value - 32) * 5 / 9)}°C" for value in self._temp_f_values] if self._select_type == "temperature" else self._attr_options
 
     @property
     def current_option(self) -> str:
-        if self._select_type != "temperature":
-            return self._settings().get(self._select_type, self._default)
+        settings = self._settings()
+        if self._select_type == "size_mode":
+            mode = settings.get("size_mode", self._size_modes[0])
+            return "Single Serve" if mode == "single" else "Carafe"
+        if self._select_type == "strength":
+            raw = settings.get("strength")
+            if raw in self._strength_values:
+                return self._strength_labels[self._strength_values.index(raw)]
+            return self._default
+        if self._select_type == "size":
+            raw = settings.get("size_value")
+            mode = settings.get("size_mode", self._size_modes[0])
+            values = self._size_profile(mode)[0]
+            if raw is not None and raw in values:
+                return self._size_options(mode)[values.index(raw)]
+            return self._default
+        if self._select_type == "bloom":
+            raw = settings.get("bloom")
+            return f"{raw}s" if raw in self._bloom_values else "Default"
+        if self._select_type == "grind":
+            raw = settings.get(self._select_type)
+            if raw is not None and raw in self._int_values:
+                return self._attr_options[self._int_values.index(raw)]
+            return self._default
         # Stored value is always "°C" format; convert for display
-        stored = self._settings().get("temperature", "90°C")
-        try:
-            c = float(stored.replace("°C", ""))
-        except ValueError:
-            c = 90.0
-        if self._is_f():
-            return f"{round(c * 9 / 5 + 32)}°F"
-        return f"{round(c)}°C"
+        raw = settings.get("temperature_f")
+        if raw not in self._temp_f_values:
+            raw = self._temp_f_values[len(self._temp_f_values) // 2]
+        return self._display_temperature(raw)
 
     @property
     def device_info(self):
         return _device_info_for(self.hass, self._entry, self._device_id)
 
     async def async_select_option(self, option: str) -> None:
+        settings = self._settings()
         if self._select_type == "temperature":
-            # Always store in °C regardless of display unit
-            if "°F" in option:
-                try:
-                    f_val = float(option.replace("°F", ""))
-                    c_val = round((f_val - 32) * 5 / 9)
-                    self._settings()["temperature"] = f"{c_val}°C"
-                except ValueError:
-                    self._settings()["temperature"] = "90°C"
+            index = self.options.index(option)
+            settings["temperature_f"] = self._temp_f_values[index]
+        elif self._select_type == "size_mode":
+            mode = "single" if option == "Single Serve" else "carafe"
+            settings["size_mode"] = mode
+            values, units = self._size_profile(mode)
+            settings["size_value"] = values[len(values) // 2]
+            settings["size_units"] = units
+            settings["size_kind"] = mode
+            async_dispatcher_send(self.hass, SIGNAL_DEVICE_UPDATED.format(device_id=self._device_id))
+        elif self._select_type == "strength":
+            idx = self._strength_labels.index(option)
+            settings["strength"] = self._strength_values[idx]
+        elif self._select_type == "size":
+            mode = settings.get("size_mode", self._size_modes[0])
+            values, units = self._size_profile(mode)
+            settings["size_value"] = values[self.options.index(option)]
+            settings["size_kind"] = mode
+            settings["size_units"] = units
+        elif self._select_type == "bloom":
+            if option == "Default":
+                settings.pop("bloom", None)
             else:
-                self._settings()["temperature"] = option
-        else:
-            self._settings()[self._select_type] = option
-        _LOGGER.info("[COFFEE] Set %s → %s", self._select_type, option)
+                settings["bloom"] = int(option[:-1])
+        elif self._select_type == "grind":
+            idx = self._attr_options.index(option)
+            settings["grind"] = self._int_values[idx]
+        _LOGGER.info("[COFFEE] Set %s -> %s", self._select_type, option)
         self.schedule_update_ha_state()
 
     async def async_added_to_hass(self) -> None:
