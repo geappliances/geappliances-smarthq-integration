@@ -266,7 +266,7 @@ logger:
 
 ### "OAuth2.0 Error" / "User session expired. Please start over"
 This error usually comes from the SmartHQ (GE) OAuth server, not from Home Assistant. Check the following in order:
-1. **Use a unique app Machine name.** Do **not** name your app `homeassistant` on the [SmartHQ Developer Portal](https://developer.smarthq.com). A duplicate/reserved name causes this exact error. Delete the app and recreate it with a unique name (e.g., `homeassistant-yourname`), then create new Application Credentials in HA with a unique name too.
+1. **Use a unique app Machine name.** Do **not** name your app `homeassistant` on the [SmartHQ Developer Portal](https://developer.smarthq.com). A duplicate/reserved name causes this exact error. Delete the app and recreate it with a unique name (e.g., `homeassistant_yourname`), then create new Application Credentials in HA with a unique name too.
 2. **Verify the Callback URL** in the Developer Portal is exactly `https://my.home-assistant.io/redirect/oauth` (note the trailing `/oauth`).
 3. **Complete the login quickly.** The GE OAuth session has a short timeout — click the login link immediately and finish without leaving the tab open.
 4. If the GE page still says `User session expired`, clear cookies for `accounts.brillion.geappliances.com` (or use a private/incognito window) and click the link again to start a fresh session.
