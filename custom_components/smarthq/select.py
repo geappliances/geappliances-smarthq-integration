@@ -98,6 +98,54 @@ def _bucket(hass, entry):
 def _store(hass, entry):
     return _bucket(hass, entry).get("store") or {}
 
+
+# ---------------------------------------------------------------------------
+# Coffee Brewer live-state reconciliation (#61)
+#
+# Pending selections made via the coffee_* selects are stored locally and only
+# sent on the next Brew Start (#52). If the user changes a value directly on
+# the machine afterwards, that local copy goes stale and would silently
+# override the machine's new value when Start is pressed. Each pending key
+# records the live value it was set against ("<key>_baseline"); if the live
+# value has since moved on, the stale pending entry is dropped so the button
+# falls back to the device's current value instead.
+# ---------------------------------------------------------------------------
+
+_COFFEE_LIVE_KEYS: dict[str, tuple[str, ...]] = {
+    "strength": ("strength",),
+    "temperature_f": ("temperatureFahrenheit",),
+    "bloom": ("bloomDwellTimeSeconds", "bloomPumpRunTimeSeconds"),
+    "grind": ("grindTimeDelta",),
+}
+
+
+def _coffee_live_value(settings: dict, live: dict, key: str) -> Any:
+    """Return the live device value corresponding to a pending settings key."""
+    if key == "size_value":
+        mode = settings.get("size_mode", "carafe")
+        live_key = "volumeCarafe" if mode == "carafe" else "volumeSingle"
+        return live.get(live_key)
+    for live_key in _COFFEE_LIVE_KEYS.get(key, ()):
+        if live_key in live:
+            return live.get(live_key)
+    return None
+
+
+def _reconcile_coffee_settings(settings: dict, live: dict) -> None:
+    """Drop pending coffee-brewer selections superseded by a live device change."""
+    for key in (*_COFFEE_LIVE_KEYS, "size_value"):
+        if key not in settings:
+            continue
+        live_value = _coffee_live_value(settings, live, key)
+        baseline = settings.get(f"{key}_baseline")
+        if live_value is not None and live_value != baseline:
+            settings.pop(key, None)
+            settings.pop(f"{key}_baseline", None)
+            if key == "size_value":
+                settings.pop("size_kind", None)
+                settings.pop("size_units", None)
+
+
 def _dev_payload(hass, entry, device_id):
     return _store(hass, entry).get(device_id) or {}
 
@@ -1526,6 +1574,10 @@ class SmartHQCoffeeBrewerSelect(SelectEntity):
         settings = bucket.setdefault("coffee_brewer_settings", {})
         return settings.setdefault(self._device_id, {})
 
+    def _live_state(self) -> dict:
+        snap = _snapshot_for(self.hass, self._entry, self._device_id)
+        return (snap.get("services") or {}).get(self._service_id) or {}
+
     def _size_profile(self, mode: str) -> tuple[list[float], str]:
         prefix = "volumeCarafe" if mode == "carafe" else "volumeSingle"
         minimum = self._cfg.get(f"{prefix}Minimum")
@@ -1566,31 +1618,43 @@ class SmartHQCoffeeBrewerSelect(SelectEntity):
     @property
     def current_option(self) -> str:
         settings = self._settings()
+        live = self._live_state()
+        _reconcile_coffee_settings(settings, live)
         if self._select_type == "size_mode":
             mode = settings.get("size_mode", self._size_modes[0])
             return "Single Serve" if mode == "single" else "Carafe"
         if self._select_type == "strength":
             raw = settings.get("strength")
+            if raw is None:
+                raw = live.get("strength")
             if raw in self._strength_values:
                 return self._strength_labels[self._strength_values.index(raw)]
             return self._default
         if self._select_type == "size":
             raw = settings.get("size_value")
             mode = settings.get("size_mode", self._size_modes[0])
+            if raw is None:
+                raw = _coffee_live_value(settings, live, "size_value")
             values = self._size_profile(mode)[0]
             if raw is not None and raw in values:
                 return self._size_options(mode)[values.index(raw)]
             return self._default
         if self._select_type == "bloom":
             raw = settings.get("bloom")
+            if raw is None:
+                raw = live.get("bloomDwellTimeSeconds", live.get("bloomPumpRunTimeSeconds"))
             return f"{raw}s" if raw in self._bloom_values else "Default"
         if self._select_type == "grind":
             raw = settings.get(self._select_type)
+            if raw is None:
+                raw = live.get("grindTimeDelta")
             if raw is not None and raw in self._int_values:
                 return self._attr_options[self._int_values.index(raw)]
             return self._default
         # Stored value is always "°C" format; convert for display
         raw = settings.get("temperature_f")
+        if raw is None:
+            raw = live.get("temperatureFahrenheit")
         if raw not in self._temp_f_values:
             raw = self._temp_f_values[len(self._temp_f_values) // 2]
         return self._display_temperature(raw)
@@ -1601,9 +1665,11 @@ class SmartHQCoffeeBrewerSelect(SelectEntity):
 
     async def async_select_option(self, option: str) -> None:
         settings = self._settings()
+        live = self._live_state()
         if self._select_type == "temperature":
             index = self.options.index(option)
             settings["temperature_f"] = self._temp_f_values[index]
+            settings["temperature_f_baseline"] = live.get("temperatureFahrenheit")
         elif self._select_type == "size_mode":
             mode = "single" if option == "Single Serve" else "carafe"
             settings["size_mode"] = mode
@@ -1611,24 +1677,30 @@ class SmartHQCoffeeBrewerSelect(SelectEntity):
             settings["size_value"] = values[len(values) // 2]
             settings["size_units"] = units
             settings["size_kind"] = mode
+            settings["size_value_baseline"] = _coffee_live_value(settings, live, "size_value")
             async_dispatcher_send(self.hass, SIGNAL_DEVICE_UPDATED.format(device_id=self._device_id))
         elif self._select_type == "strength":
             idx = self._strength_labels.index(option)
             settings["strength"] = self._strength_values[idx]
+            settings["strength_baseline"] = live.get("strength")
         elif self._select_type == "size":
             mode = settings.get("size_mode", self._size_modes[0])
             values, units = self._size_profile(mode)
             settings["size_value"] = values[self.options.index(option)]
             settings["size_kind"] = mode
             settings["size_units"] = units
+            settings["size_value_baseline"] = _coffee_live_value(settings, live, "size_value")
         elif self._select_type == "bloom":
             if option == "Default":
                 settings.pop("bloom", None)
+                settings.pop("bloom_baseline", None)
             else:
                 settings["bloom"] = int(option[:-1])
+                settings["bloom_baseline"] = live.get("bloomDwellTimeSeconds", live.get("bloomPumpRunTimeSeconds"))
         elif self._select_type == "grind":
             idx = self._attr_options.index(option)
             settings["grind"] = self._int_values[idx]
+            settings["grind_baseline"] = live.get("grindTimeDelta")
         _LOGGER.info("[COFFEE] Set %s -> %s", self._select_type, option)
         self.schedule_update_ha_state()
 

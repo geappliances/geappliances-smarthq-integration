@@ -510,7 +510,12 @@ class SmartHQCoffeeBrewerButton(_SmartHQButtonBase):
             # Only include parameters the user actually touched via the
             # coffee_* selects, so untouched fields fall back to the
             # device's own defaults instead of a hardcoded value (#52).
+            # Pending selections superseded by a live device change (e.g. the
+            # user changed cups directly on the machine after picking a value
+            # in HA) are dropped first so they can't override it (#61).
             settings = (bucket.get("coffee_brewer_settings") or {}).get(self._device_id, {})
+            from .select import _reconcile_coffee_settings
+            _reconcile_coffee_settings(settings, svc)
             if "strength" in settings:
                 command["strength"] = settings["strength"]
             if "size_value" in settings:
