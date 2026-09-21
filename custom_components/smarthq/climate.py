@@ -55,6 +55,7 @@ _THERMOSTAT_MODE_MAP: Dict[str, HVACMode] = {
     _ENERGY_SAVER_MODE:                                    HVACMode.AUTO,
     "cloud.smarthq.type.thermostatmode.cool.quiet":        HVACMode.COOL,
     "cloud.smarthq.type.thermostatmode.cool.turbo":        HVACMode.COOL,
+    "cloud.smarthq.type.thermostatmode.silent":            HVACMode.COOL,
     "cloud.smarthq.type.thermostatmode.heat":              HVACMode.HEAT,
     _NATIVE_AUTO_MODE:                                     HVACMode.AUTO,
     "cloud.smarthq.type.thermostatmode.auto.twotemperature": HVACMode.AUTO,
