@@ -9,6 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_entry_oauth2_flow
+from homeassistant.helpers import config_validation as cv
 
 from .const import DOMAIN
 from .coordinator import SmartHQCoordinator
@@ -16,6 +17,8 @@ from .coordinator import SmartHQCoordinator
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = ["sensor", "number", "switch", "binary_sensor", "select", "button", "climate", "water_heater", "light", "text"]
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 async def _maybe_await(x):
     """Await if x is a coroutine, else return as-is."""
