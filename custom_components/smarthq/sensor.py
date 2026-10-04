@@ -596,12 +596,14 @@ def _integer_units_to_ha(int_units: str) -> tuple:
     """Map INTEGER_UNITS string to (ha_unit, SensorDeviceClass | None).
 
     The API sends full URIs (e.g. "cloud.smarthq.type.integerunits.percentage");
-    extract the tail token before lookup.
+    look up the complete unit name after "integerunits.".
     """
-    # Extract tail token from full URI (e.g. "cloud.smarthq.type.integerunits.kwh" → "kwh")
-    key = int_units.split(".")[-1] if int_units else ""
+    # The complete unit name, so a dotted one such as "ounces.fluid" survives
+    # (e.g. "cloud.smarthq.type.integerunits.kwh" → "kwh").
+    key = int_units.split("integerunits.")[-1] if int_units else ""
     _map = {
         "percentage":           (PERCENTAGE, SensorDeviceClass.BATTERY),
+        "ounces.fluid":         (UnitOfVolume.FLUID_OUNCES, SensorDeviceClass.VOLUME),
         "kwh":                  (UnitOfEnergy.KILO_WATT_HOUR, SensorDeviceClass.ENERGY),
         "watts":                (UnitOfPower.WATT, SensorDeviceClass.POWER),
         "dbm":                  ("dBm", SensorDeviceClass.SIGNAL_STRENGTH),
@@ -890,6 +892,42 @@ class SmartHQRawTempSensor(SmartHQServiceSensor):
     def available(self) -> bool:
         st = self._get_state()
         return bool(st) and not st.get("disabled") and self._state_key in st
+
+
+class SmartHQWaterMeterSensor(SmartHQServiceSensor):
+    """Report the water meter's fluid-ounce counter in US gallons.
+
+    Reported in gallons (128 fl oz = 1 US gallon, an exact ratio) because
+    Home Assistant's water device class does not accept fluid ounces; with
+    the water class the meter can feed the Energy dashboard, and Home
+    Assistant converts to litres for metric installs.
+    """
+
+    _attr_suggested_display_precision = 2
+
+    def __init__(
+        self,
+        hass, entry, device_id, service_id, dev_name,
+        label, unique_id,
+        translation_key: Optional[str] = None,
+    ) -> None:
+        super().__init__(
+            hass, entry, device_id, service_id, dev_name,
+            label, "value",
+            SensorDeviceClass.WATER, UnitOfVolume.GALLONS, unique_id,
+            translation_key=translation_key,
+            state_class=SensorStateClass.TOTAL_INCREASING,
+        )
+
+    @property
+    def native_value(self):
+        raw = self._get_state().get("value")
+        if raw is None:
+            return None
+        try:
+            return float(raw) / 128
+        except (TypeError, ValueError):
+            return None
 
 
 class SmartHQMeterSensor(SmartHQServiceSensor):
@@ -1679,7 +1717,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                         else None
                     )
                     uid = make_unique_id(device_id, service_id, "integer")
-                    if uid not in existing_uids:
+                    is_meter = (svc.get("serviceDeviceType") or "").endswith(".meter")
+                    if is_meter and ha_unit == UnitOfVolume.FLUID_OUNCES and uid not in existing_uids:
+                        entities.append(SmartHQWaterMeterSensor(
+                            hass, entry, device_id, service_id, dev_name, label_base, uid,
+                            translation_key=_make_translation_key(label_base),
+                        ))
+                        existing_uids.add(uid)
+                        used_pairs.add((service_id, "value"))
+                    elif uid not in existing_uids:
                         entities.append(SmartHQServiceSensor(
                             hass, entry, device_id, service_id, dev_name,
                             label_base, "value",
