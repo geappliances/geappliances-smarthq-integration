@@ -21,7 +21,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME, sdev_prefix
+from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME, sdev_prefix, strip_device_name
 from .dispatcher import SIGNAL_DEVICE_UPDATED
 from .service_registry import (
     TRIGGER_SERVICE,
@@ -82,7 +82,7 @@ _WS_BUTTON_SPECS: dict[str, _WBSpec] = {
         ("Stop",  CMD_DISHWASHER_STATE_STOP,  "dw_stop",   ""),
         ("Pause", CMD_DISHWASHER_STATE_PAUSE, "dw_pause",  ""),
     ]),
-    DISHDRAWER_STATE_LEGACY_SERVICE: _WBSpec(cls="DW", label_prefix="Dishdrawer ", buttons=[
+    DISHDRAWER_STATE_LEGACY_SERVICE: _WBSpec(cls="DW", label_prefix="", buttons=[
         ("Start", CMD_DISHDRAWER_STATE_LEGACY_START, "ddr_start", ""),
         ("Stop",  CMD_DISHDRAWER_STATE_LEGACY_STOP,  "ddr_stop",  ""),
         ("Pause", CMD_DISHDRAWER_STATE_LEGACY_PAUSE, "ddr_pause", ""),
@@ -331,7 +331,7 @@ class SmartHQTriggerButton(_SmartHQButtonBase):
         self._client = client
         self._service_id = service_id
         self._svc = svc  # full service dict for async_send_service_command
-        self._attr_name = f"{dev_name} {label}"
+        self._attr_name = strip_device_name(dev_name, label)
 
     def _device_presence(self) -> str:
         """Return device presence status string (e.g. 'ONLINE', 'OFFLINE')."""
@@ -432,7 +432,7 @@ class SmartHQHotWaterPresetButton(_SmartHQButtonBase):
         self._client = client
         self._service_id = service_id
         self._fahrenheit = fahrenheit
-        self._attr_name = f"{dev_name} {label}"
+        self._attr_name = strip_device_name(dev_name, label)
         self._attr_icon = icon
 
     async def async_press(self) -> None:
@@ -466,7 +466,7 @@ class SmartHQFirmwareUpgradeButton(_SmartHQButtonBase):
         super().__init__(hass, entry, device_id, dev_name, unique_id)
         self._client = client
         self._service_id = service_id
-        self._attr_name = f"{dev_name} Start Firmware Upgrade"
+        self._attr_name = "Start Firmware Upgrade"
 
     async def async_press(self) -> None:
         if self._client:
@@ -491,7 +491,7 @@ class SmartHQCoffeeBrewerButton(_SmartHQButtonBase):
         self._service_id = service_id
         self._command_type = command_type
         self._button_type = button_type
-        self._attr_name = f"{dev_name} Brew {button_type.title()}"
+        self._attr_name = f"Brew {button_type.title()}"
         self._attr_icon = "mdi:coffee" if button_type == "start" else "mdi:stop"
 
     async def async_press(self) -> None:
@@ -576,9 +576,9 @@ class SmartHQStartCookingButton(_SmartHQButtonBase):
         # Smoker keeps the familiar "Send To Smoker" label; all other cooking
         # devices (Toaster Oven, Oven, etc.) use the generic "Start Cooking" label.
         if is_smoker_style:
-            self._attr_name = f"{dev_name} Send To Smoker"
+            self._attr_name = "Send To Smoker"
         else:
-            self._attr_name = f"{dev_name} Start Cooking"
+            self._attr_name = "Start Cooking"
 
     @property
     def available(self) -> bool:
@@ -763,7 +763,7 @@ class SmartHQDishwasherStateButton(_SmartHQButtonBase):
         self._ws = ws
         self._service_id = service_id
         self._command_type = command_type
-        self._attr_name = f"{dev_name} Dishwasher {label}"
+        self._attr_name = label
         self._attr_icon = {
             "Start": "mdi:play",
             "Stop":  "mdi:stop",
@@ -794,7 +794,7 @@ class SmartHQAdvantiumButton(_SmartHQButtonBase):
         self._ws = ws
         self._service_id = service_id
         self._command_type = command_type
-        self._attr_name = f"{dev_name} Advantium {label}"
+        self._attr_name = f"Advantium {label}"
         self._attr_icon = icon
 
     async def async_press(self) -> None:

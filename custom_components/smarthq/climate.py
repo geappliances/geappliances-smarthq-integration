@@ -203,7 +203,7 @@ class SmartHQThermostatClimate(ClimateEntity):
         self._device_id = device_id
         self._service_id = service_id
         self._svc_config = svc_config
-        self._attr_name = f"{dev_name} Thermostat"
+        self._attr_name = "Thermostat"
         self._attr_unique_id = unique_id
 
         # Build supported HVAC modes from config

@@ -21,7 +21,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME, sdev_prefix
+from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME, sdev_prefix, strip_device_name, domain_words
 from .dispatcher import SIGNAL_DEVICE_UPDATED, SIGNAL_COOK_MODE_CHANGED
 from .service_registry import (
     MODE_SERVICE,
@@ -694,10 +694,10 @@ class SmartHQModeSelect(SelectEntity):
         self._dom = dom  # store for temperatureunits detection
 
         # Label from domain tail, with optional serviceDeviceType prefix
-        dom_tail = dom.split(".")[-1].replace("_", " ").title() if dom else "Mode"
+        dom_tail = domain_words(dom.split(".")[-1]) if dom else "Mode"
         _prefix = sdev_prefix(sdev)
         label = f"{_prefix} {dom_tail}".strip() if _prefix else dom_tail
-        self._attr_name = f"{dev_name} {label}"
+        self._attr_name = strip_device_name(dev_name, label)
         self._attr_icon = None
 
         if disabled_by_default:
@@ -830,7 +830,7 @@ class SmartHQWaterHeaterCapacitySelect(SelectEntity):
         self._device_id = device_id
         self._service_id = service_id
         self._attr_unique_id = unique_id
-        self._attr_name = f"{dev_name} Capacity"
+        self._attr_name = "Capacity"
 
         self._token_to_name: Dict[str, str] = {}
         self._name_to_token: Dict[str, str] = {}
@@ -937,7 +937,7 @@ class SmartHQCookingModeSelect(SelectEntity):
         self._service_id = service_id  # representative service id
         self._cooking_svcs = cooking_svcs  # list of svc dicts for all food domains
         self._attr_unique_id = unique_id
-        self._attr_name = f"{dev_name} Cook Mode"
+        self._attr_name = "Cook Mode"
 
         # Build options from all_domains
         self._domain_to_name: Dict[str, str] = {d: _pretty(d) for d in all_domains if d}
@@ -1175,7 +1175,7 @@ class SmartHQCookDonenessSelect(_SmartHQCookParamSelectBase):
 
     def __init__(self, hass, entry, device_id, dev_name, cooking_svcs, unique_id):
         super().__init__(hass, entry, device_id, dev_name, cooking_svcs, unique_id)
-        self._attr_name = f"{dev_name} Doneness Level"
+        self._attr_name = "Doneness Level"
 
     def _options_for_svc(self, svc: dict) -> list[str]:
         levels = (svc.get("config") or {}).get("donenessLevelsAvailable") or []
@@ -1228,7 +1228,7 @@ class SmartHQCookOptionSelect(_SmartHQCookParamSelectBase):
 
     def __init__(self, hass, entry, device_id, dev_name, cooking_svcs, unique_id):
         super().__init__(hass, entry, device_id, dev_name, cooking_svcs, unique_id)
-        self._attr_name = f"{dev_name} Cook Option"
+        self._attr_name = "Cook Option"
 
     @property
     def available(self) -> bool:
@@ -1293,7 +1293,7 @@ class SmartHQCookNumericOptionSelect(_SmartHQCookParamSelectBase):
 
     def __init__(self, hass, entry, device_id, dev_name, cooking_svcs, unique_id):
         super().__init__(hass, entry, device_id, dev_name, cooking_svcs, unique_id)
-        self._attr_name = f"{dev_name} Cook Quantity"
+        self._attr_name = "Cook Quantity"
 
     def _unit_type(self, svc: dict) -> str:
         units = (svc.get("config") or {}).get("numericOptionUnits") or ""
@@ -1397,7 +1397,7 @@ class SmartHQSmokeLevelSelect(_SmartHQCookParamSelectBase):
 
     def __init__(self, hass, entry, device_id, dev_name, cooking_svcs, unique_id):
         super().__init__(hass, entry, device_id, dev_name, cooking_svcs, unique_id)
-        self._attr_name = f"{dev_name} Smoke Level"
+        self._attr_name = "Smoke Level"
         self._attr_options = list(self._LEVEL_LABELS.values())
 
     def _svc_supports_smoke(self, svc: dict | None) -> bool:
@@ -1502,7 +1502,7 @@ class SmartHQCoffeeBrewerSelect(SelectEntity):
         self._cfg = cfg
 
         if select_type == "strength":
-            self._attr_name = f"{dev_name} Brew Strength"
+            self._attr_name = "Brew Strength"
             self._attr_icon = "mdi:coffee-maker"
             lo = int(cfg.get("strengthMinimum") if cfg.get("strengthMinimum") is not None else 0)
             hi = int(cfg.get("strengthMaximum") if cfg.get("strengthMaximum") is not None else 2)
@@ -1512,13 +1512,13 @@ class SmartHQCoffeeBrewerSelect(SelectEntity):
             self._attr_options = self._strength_labels
             self._default = self._strength_labels[len(self._strength_labels) // 2]
         elif select_type == "size_mode":
-            self._attr_name = f"{dev_name} Brew Size Mode"
+            self._attr_name = "Brew Size Mode"
             self._attr_icon = "mdi:cup-outline"
             self._size_modes = ["carafe", "single"]
             self._attr_options = ["Carafe", "Single Serve"]
             self._default = "Carafe"
         elif select_type == "size":
-            self._attr_name = f"{dev_name} Brew Size"
+            self._attr_name = "Brew Size"
             self._attr_icon = "mdi:cup"
             self._size_modes = []
             if cfg.get("volumeCarafeSupported") in COOKING_PARAM_SUPPORTED:
@@ -1529,7 +1529,7 @@ class SmartHQCoffeeBrewerSelect(SelectEntity):
                 self._size_modes = ["carafe"]
             self._default = self._size_options(self._size_modes[0])[len(self._size_options(self._size_modes[0])) // 2]
         elif select_type == "temperature":
-            self._attr_name = f"{dev_name} Brew Temperature"
+            self._attr_name = "Brew Temperature"
             self._attr_icon = "mdi:thermometer"
             f_lo = cfg.get("temperatureFahrenheitMinimum")
             f_hi = cfg.get("temperatureFahrenheitMaximum")
@@ -1543,7 +1543,7 @@ class SmartHQCoffeeBrewerSelect(SelectEntity):
             self._temp_f_values = list(range(first, last + 1, 5)) or self._TEMP_F_RANGE_DEFAULT
             self._default = self._display_temperature(self._temp_f_values[len(self._temp_f_values) // 2])
         elif select_type == "bloom":
-            self._attr_name = f"{dev_name} Bloom Time"
+            self._attr_name = "Bloom Time"
             self._attr_icon = "mdi:timer-sand"
             mins = []
             maxes = []
@@ -1557,7 +1557,7 @@ class SmartHQCoffeeBrewerSelect(SelectEntity):
             self._attr_options = ["Default"] + [f"{v}s" for v in self._bloom_values]
             self._default = "Default"
         else:  # grind
-            self._attr_name = f"{dev_name} Grind Time"
+            self._attr_name = "Grind Time"
             self._attr_icon = "mdi:coffee-outline"
             lo = int(cfg.get("grindTimeDeltaMinimum") or 0)
             hi = int(cfg.get("grindTimeDeltaMaximum") or 0)
@@ -1750,7 +1750,7 @@ class SmartHQTemperatureSetpointSelect(SelectEntity):
         self._max_f = max_f
         self._warm_mode_only = warm_mode_only
         self._attr_unique_id = unique_id
-        self._attr_name = f"{dev_name} {label}"
+        self._attr_name = strip_device_name(dev_name, label)
         if disabled_by_default:
             self._attr_entity_registry_enabled_default = False
             self._attr_entity_category = EntityCategory.DIAGNOSTIC
@@ -1964,7 +1964,7 @@ class SmartHQLaundryModeSelect(SelectEntity):
 
     Note: laundry.mode.v1 services list one domain per service (e.g.
     cloud.smarthq.domain.laundry.jeans).  A device will have many such
-    services — we aggregate them into a single "Laundry Cycle" select by
+    services — we aggregate them into a single "Cycle" select by
     grouping per device and using the first service_id as the representative
     key.  The discovery loop therefore creates **one** entity per device
     (see async_setup_entry aggregation below).
@@ -1993,7 +1993,7 @@ class SmartHQLaundryModeSelect(SelectEntity):
         self._device_id = device_id
         self._service_id = service_id
         self._attr_unique_id = unique_id
-        self._attr_name = f"{dev_name} Laundry Cycle"
+        self._attr_name = "Cycle"
         self._all_svcs: List[dict] = all_svcs or []
 
         # Optimistic: set when user picks an option; cleared when WS confirms.
@@ -2128,7 +2128,7 @@ class SmartHQDishwasherModeSelect(SelectEntity):
         self._entry = entry
         self._client = client
         self._device_id = device_id
-        self._attr_name = f"{dev_name} Dishwasher Cycle"
+        self._attr_name = "Cycle"
         self._attr_unique_id = unique_id
 
         # Build option → (service_id, domain) map from all dishwasher.mode.v1 services
@@ -2224,7 +2224,7 @@ class SmartHQGenericModeSelect(SelectEntity):
         self._service_id = service_id
         self._command_type = command_type
         self._attr_unique_id = unique_id
-        self._attr_name = f"{dev_name} {label}"
+        self._attr_name = strip_device_name(dev_name, label)
 
         self._token_to_name: Dict[str, str] = {}
         self._name_to_token: Dict[str, str] = {}
@@ -2349,7 +2349,7 @@ class SmartHQDishdrawerModeLegacyCycleSelect(SelectEntity):
         self._client = client
         self._device_id = device_id
         self._attr_unique_id = unique_id
-        self._attr_name = f"{dev_name} Dishdrawer Cycle"
+        self._attr_name = "Cycle"
         self._all_svcs = all_svcs
 
         # domain → service_id map for sending the correct command
@@ -2470,7 +2470,7 @@ class SmartHQDishdrawerModeLegacyOptionSelect(SelectEntity):
         self._service_id = service_id
         self._all_svcs = all_svcs
         self._attr_unique_id = unique_id
-        self._attr_name = f"{dev_name} Dishdrawer Option"
+        self._attr_name = "Option"
 
         self._token_to_label: Dict[str, str] = {}
         self._label_to_token: Dict[str, str] = {}
@@ -2546,7 +2546,7 @@ class SmartHQDishwasherFavoritesSelect(SelectEntity):
         self._device_id = device_id
         self._service_id = service_id
         self._attr_unique_id = unique_id
-        self._attr_name = f"{dev_name} Dishwasher Favorite Mode"
+        self._attr_name = "Favorite Mode"
 
         self._token_to_name: Dict[str, str] = {}
         self._name_to_token: Dict[str, str] = {}
@@ -2657,7 +2657,7 @@ class SmartHQCookTargetMethodSelect(SelectEntity):
         self._entry = entry
         self._device_id = device_id
         self._attr_unique_id = unique_id
-        self._attr_name = f"{dev_name} Cook Target Method"
+        self._attr_name = "Cook Target Method"
         self._attr_options = self._OPTIONS
 
     def _pending(self) -> dict:
@@ -2811,21 +2811,17 @@ class _SmartHQSmokerTempSelectBase(SelectEntity):
 
 
 class SmartHQSmokerTempSelect(_SmartHQSmokerTempSelectBase):
-    """Cooking cavity temperature as a stepped select.
+    """Cooking cavity target temperature as a stepped select ("Cook Temperature").
 
-    Used for Smoker ("Smoker Temp") and Toaster Oven/Oven ("Cook Temperature").
+    Used for Smoker and Toaster Oven/Oven alike.
     """
 
     def __init__(self, hass, entry, device_id: str, dev_name: str, unique_id: str,
                  min_f: float, max_f: float, is_smoker: bool = False,
                  cooking_svcs: list | None = None) -> None:
         super().__init__(hass, entry, device_id, dev_name, unique_id, min_f, max_f, cooking_svcs)
-        if is_smoker:
-            self._attr_name = f"{dev_name} Smoker Temp"
-            self._attr_icon = "mdi:thermometer"
-        else:
-            self._attr_name = f"{dev_name} Cook Temperature"
-            self._attr_icon = "mdi:thermometer"
+        self._attr_name = "Cook Temperature"
+        self._attr_icon = "mdi:thermometer"
 
     @property
     def current_option(self):
@@ -2860,7 +2856,7 @@ class SmartHQProbeTargetSelect(_SmartHQSmokerTempSelectBase):
     def __init__(self, hass, entry, device_id: str, dev_name: str, unique_id: str,
                  min_f: float, max_f: float) -> None:
         super().__init__(hass, entry, device_id, dev_name, unique_id, min_f, max_f)
-        self._attr_name = f"{dev_name} Probe Target"
+        self._attr_name = "Probe Target"
         self._attr_icon = "mdi:thermometer-probe"
 
     @property
@@ -2910,7 +2906,7 @@ class SmartHQCookTimeHoursSelect(_SmartHQCookParamSelectBase):
 
     def __init__(self, hass, entry, device_id, dev_name, cooking_svcs, unique_id):
         super().__init__(hass, entry, device_id, dev_name, cooking_svcs, unique_id)
-        self._attr_name = f"{dev_name} Cook Time Hours"
+        self._attr_name = "Cook Time Hours"
         self._attr_options = [f"{h} h" for h in range(17)]
 
     @property
@@ -2960,7 +2956,7 @@ class SmartHQCookTimeMinutesSelect(_SmartHQCookParamSelectBase):
 
     def __init__(self, hass, entry, device_id, dev_name, cooking_svcs, unique_id):
         super().__init__(hass, entry, device_id, dev_name, cooking_svcs, unique_id)
-        self._attr_name = f"{dev_name} Cook Time Minutes"
+        self._attr_name = "Cook Time Minutes"
         self._attr_options = self._MINUTE_OPTS
 
     @property
@@ -3111,7 +3107,7 @@ class SmartHQAutoWarmHoursSelect(_SmartHQAutoWarmSelectBase):
     def __init__(self, hass, entry, device_id: str, service_id: str,
                  dev_name: str, max_minutes: int, unique_id: str) -> None:
         super().__init__(hass, entry, device_id, service_id, dev_name, unique_id)
-        self._attr_name = f"{dev_name} Keep Warm Time Hours"
+        self._attr_name = "Keep Warm Time Hours"
         max_h = max(1, max_minutes // 60)
         self._attr_options = [f"{h} h" for h in range(max_h + 1)]
 
@@ -3143,7 +3139,7 @@ class SmartHQAutoWarmMinutesSelect(_SmartHQAutoWarmSelectBase):
     def __init__(self, hass, entry, device_id: str, service_id: str,
                  dev_name: str, unique_id: str) -> None:
         super().__init__(hass, entry, device_id, service_id, dev_name, unique_id)
-        self._attr_name = f"{dev_name} Keep Warm Time Minutes"
+        self._attr_name = "Keep Warm Time Minutes"
         self._attr_options = self._OPTS
 
     @property
@@ -3185,7 +3181,7 @@ class _SmartHQIntegerTimeBase(SelectEntity):
         self._client = client
         self._device_id = device_id
         self._service_id = service_id
-        self._attr_name = f"{dev_name} {label}"
+        self._attr_name = strip_device_name(dev_name, label)
         self._attr_unique_id = unique_id
         self._attr_entity_registry_enabled_default = not disabled_by_default
 

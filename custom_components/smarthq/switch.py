@@ -24,7 +24,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME, sdev_prefix
+from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME, sdev_prefix, strip_device_name
 from .dispatcher import SIGNAL_DEVICE_UPDATED
 from .service_registry import (
     TOGGLE_SERVICE,
@@ -252,7 +252,7 @@ class _SmartHQSwitchBase(SwitchEntity):
         self._service_id = service_id
         info = _dev_payload(hass, entry, device_id).get("info") or {}
         dev_name = info.get("nickname") or info.get("name") or DEFAULT_NAME
-        self._attr_name = f"{dev_name} {label}"
+        self._attr_name = strip_device_name(dev_name, label)
         self._attr_icon = icon
         self._attr_unique_id = unique_id
 
@@ -472,7 +472,7 @@ class SmartHQSettingSwitch(SwitchEntity):
         self._device_id = device_id
         self._rule_id = rule_id
         self._title = title
-        self._attr_name = f"{dev_name} {title}"
+        self._attr_name = title
         self._attr_unique_id = unique_id
         self._attr_icon = _icon_for_setting(title)
         self._attr_entity_category = EntityCategory.CONFIG  # shown under Configuration, not Controls

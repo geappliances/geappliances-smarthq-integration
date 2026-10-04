@@ -19,7 +19,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME, sdev_prefix
+from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME, sdev_prefix, strip_device_name
 from .dispatcher import SIGNAL_DEVICE_UPDATED, SIGNAL_COOK_MODE_CHANGED
 from .sensor import _snapshot_for, _dev_payload, _device_info_for, _integer_units_to_ha
 from .service_registry import (
@@ -185,7 +185,7 @@ class _SmartHQNumberBase(NumberEntity):
         self._entry = entry
         self._device_id = device_id
         self._service_id = service_id
-        self._attr_name = f"{dev_name} {label}"
+        self._attr_name = strip_device_name(dev_name, label)
         self._attr_unique_id = unique_id
 
     def _get_state(self) -> dict:
@@ -459,7 +459,7 @@ class SmartHQAutoWarmHoursNumber(_SmartHQAutoWarmDurationBase):
 
     def __init__(self, hass, entry, device_id, service_id, dev_name, unique_id):
         super().__init__(hass, entry, device_id, service_id, dev_name, unique_id)
-        self._attr_name = f"{dev_name} Keep Warm Time Hours"
+        self._attr_name = "Keep Warm Time Hours"
 
     @property
     def native_value(self) -> float | None:
@@ -495,7 +495,7 @@ class SmartHQAutoWarmMinutesNumber(_SmartHQAutoWarmDurationBase):
 
     def __init__(self, hass, entry, device_id, service_id, dev_name, unique_id):
         super().__init__(hass, entry, device_id, service_id, dev_name, unique_id)
-        self._attr_name = f"{dev_name} Keep Warm Time Minutes"
+        self._attr_name = "Keep Warm Time Minutes"
 
     @property
     def native_value(self) -> float | None:
@@ -690,7 +690,7 @@ class SmartHQCookTimeNumber(_SmartHQSmokerBase):
 
     def __init__(self, hass, entry, device_id, dev_name, unique_id, has_probe: bool = False):
         super().__init__(hass, entry, device_id, dev_name, unique_id)
-        self._attr_name = f"{dev_name} Cook Time"
+        self._attr_name = "Cook Time"
         self._has_probe = has_probe
 
     async def async_added_to_hass(self) -> None:
@@ -776,7 +776,7 @@ class SmartHQSmokeLevelNumber(_SmartHQSmokerBase):
 
     def __init__(self, hass, entry, device_id, dev_name, unique_id):
         super().__init__(hass, entry, device_id, dev_name, unique_id)
-        self._attr_name = f"{dev_name} Smoke Level"
+        self._attr_name = "Smoke Level"
 
     @property
     def native_value(self) -> Optional[float]:
