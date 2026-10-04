@@ -310,7 +310,8 @@ async def async_setup_entry(
                     if uid not in created:
                         created.add(uid)
                         dom = svc.get("domainType") or ""
-                        label = dom.split(".")[-1].replace("_", " ").title() + " Door"
+                        tail = dom.split(".")[-1].replace("_", " ").title()
+                        label = "Door" if tail == "Door" else f"{tail} Door"
                         coord_entities.append(
                             SmartHQDoorBinarySensor(hass, entry, device_id, service_id, label, uid)
                         )
