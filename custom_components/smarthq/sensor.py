@@ -450,7 +450,9 @@ class SmartHQSnapshotSensor(SensorEntity):
         # Do NOT set _attr_native_unit_of_measurement or _attr_device_class for
         # temp keys — HA caches _attr_ values and they take priority over properties.
         self._is_temp_key = state_key in _C_KEYS or state_key in _F_KEYS
-        if not self._is_temp_key:
+        if self._is_temp_key:
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+        else:
             self._attr_native_unit_of_measurement = unit
             self._attr_device_class = device_class
 
@@ -759,6 +761,8 @@ class SmartHQTempSensor(SmartHQServiceSensor):
     the initial state from coordinator.data.
     """
 
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
     def __init__(
         self,
         hass, entry, device_id, service_id, dev_name,
@@ -838,6 +842,8 @@ class SmartHQRawTempSensor(SmartHQServiceSensor):
     _device_temp_is_f(), which checks the cache, WS snapshot, coordinator data,
     and HA system unit in that priority order.
     """
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(
         self,
@@ -1672,10 +1678,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     # or device class could be derived (unitless readings such as
                     # "level"/"count"/"unitless" or an absent unit), mark the
                     # sensor as a unitless MEASUREMENT so HA graphs the number
-                    # instead of rendering it as a categorical string.
+                    # instead of rendering it as a categorical string. Integer
+                    # temperatures are measurements too, so they get statistics.
+                    unitless = ha_unit is None and dev_class is None
                     state_class = (
                         SensorStateClass.MEASUREMENT
-                        if ha_unit is None and dev_class is None
+                        if unitless or dev_class == SensorDeviceClass.TEMPERATURE
                         else None
                     )
                     uid = make_unique_id(device_id, service_id, "integer")
