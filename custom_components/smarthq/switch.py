@@ -417,7 +417,7 @@ def _icon_for_setting(title: str) -> str:
     """Pick an MDI icon based on alert/notification title keywords."""
     t = title.lower()
     if "door" in t:
-        return "mdi:door-alert"
+        return "mdi:door"
     if "smoke" in t or "clear" in t:
         return "mdi:smoke-detector"
     if "preheat" in t:
