@@ -517,13 +517,25 @@ class SmartHQSnapshotSensor(SensorEntity):
             return None
         return self._fixed_device_class
 
+    def _reports_fahrenheit(self) -> bool:
+        """Which unit this temperature sensor reports.
+
+        Normally the sensor follows the appliance's own unit setting, so an
+        existing entity switches from °F to °C when the user changes the
+        appliance. With alternate temperatures on there is a sensor per unit,
+        and each keeps the unit its key implies.
+        """
+        if self._entry.options.get(OPTION_SHOW_ALT_TEMPS, False):
+            return self._state_key in _F_KEYS
+        return _device_temp_is_f(self.hass, self._entry, self._device_id)
+
     @property
     def native_unit_of_measurement(self) -> Optional[str]:
         if not self._is_temp_key:
             return self._fixed_unit
         return (
             UnitOfTemperature.FAHRENHEIT
-            if _device_temp_is_f(self.hass, self._entry, self._device_id)
+            if self._reports_fahrenheit()
             else UnitOfTemperature.CELSIUS
         )
 
@@ -552,7 +564,7 @@ class SmartHQSnapshotSensor(SensorEntity):
                 f_val = float(raw)
             except (TypeError, ValueError):
                 return raw
-            if _device_temp_is_f(self.hass, self._entry, self._device_id):
+            if self._reports_fahrenheit():
                 return round(f_val, 1)
             return round((f_val - 32) * 5 / 9, 1)
 
