@@ -310,7 +310,8 @@ async def async_setup_entry(
                     if uid not in created:
                         created.add(uid)
                         dom = svc.get("domainType") or ""
-                        label = dom.split(".")[-1].replace("_", " ").title() + " Door"
+                        tail = dom.split(".")[-1].replace("_", " ").title()
+                        label = "Door" if tail == "Door" else f"{tail} Door"
                         coord_entities.append(
                             SmartHQDoorBinarySensor(hass, entry, device_id, service_id, label, uid)
                         )
@@ -413,6 +414,35 @@ async def async_setup_entry(
         )
 
 
+# Alert codes GE sends are run-together words ("enhancedfeature.supportedchanged").
+# Known full codes get a readable name; otherwise each part is looked up here
+# and anything unknown is title-cased.
+_ALERT_NAMES: dict[str, str] = {
+    "door.open.freezer": "Freezer Door Open",
+    "door.alarm.freezer": "Freezer Door Alarm",
+    "left.door.alarm.freshfood": "Fresh Food Left Door Alarm",
+    "right.door.alarm.freshfood": "Fresh Food Right Door Alarm",
+    "ota.update": "Firmware Update",
+    "ota.update.critical": "Critical Firmware Update",
+}
+_ALERT_WORDS: dict[str, str] = {
+    "contractormode": "Contractor Mode",
+    "enhancedfeature": "Enhanced Feature",
+    "supportedchanged": "Supported Changed",
+    "freshfood": "Fresh Food",
+    "icemaker": "Ice Maker",
+    "waterfilter": "Water Filter",
+    "ota": "OTA",
+}
+
+
+def _alert_name(token: str) -> str:
+    code = token.replace("cloud.smarthq.alert.", "")
+    if code in _ALERT_NAMES:
+        return _ALERT_NAMES[code]
+    return " ".join(_ALERT_WORDS.get(part, part.replace("_", " ").title()) for part in code.split("."))
+
+
 class SmartHQAlertBinarySensor(BinarySensorEntity):
     _attr_should_poll = False
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
@@ -423,8 +453,9 @@ class SmartHQAlertBinarySensor(BinarySensorEntity):
         self._entry = entry
         self._device_id = device_id
         self._token = token
-        nice = token.split(".")[-1].replace("_", " ").title()
-        self._attr_name = f"Alert: {nice}"
+        # The whole alert code, not its last word: "door.open.freezer" and
+        # "door.alarm.freezer" must not both become "Alert: Freezer".
+        self._attr_name = f"Alert: {_alert_name(token)}"
         self._attr_unique_id = f"{DOMAIN}:{device_id}:alert:{token}"
 
     def _get_alert(self) -> dict:

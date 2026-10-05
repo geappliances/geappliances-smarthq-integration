@@ -30,7 +30,16 @@ import logging
 
 _LOGGER = logging.getLogger(__name__)
 
-from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME, sdev_prefix, OPTION_SHOW_ALT_TEMPS
+from .const import (
+    DOMAIN,
+    MANUFACTURER,
+    DEFAULT_NAME,
+    sdev_prefix,
+    OPTION_SHOW_ALT_TEMPS,
+    entity_label,
+    DOMAIN_WORDS,
+    domain_words,
+)
 from .dispatcher import SIGNAL_DEVICE_UPDATED
 from .service_registry import (
     TEMPERATURE_SERVICE,
@@ -362,8 +371,9 @@ def _label_for_key(key: str, stype: str = "", dom: str = "") -> str:
 
     Dispatch order:
       1. Time keys  → _label_for_time_key (domain-aware)
-      2. Temperature keys → domain-aware prefix + "Temperature [°F]"
-      3. Everything else → _camel_to_words(key)
+      2. Temperature keys → domain-aware prefix + "Temperature"
+      3. "mode" on a known domain → that domain's words + "Mode"
+      4. Everything else → _camel_to_words(key)
     """
     # 1. Time keys
     if key in _KEY_TIME_SUFFIX:
@@ -371,17 +381,26 @@ def _label_for_key(key: str, stype: str = "", dom: str = "") -> str:
 
     # 2. Temperature keys: derive prefix from domainType / serviceType
     if key in _C_KEYS or key in _F_KEYS:
-        unit_sfx = "" if key in _C_KEYS else " (°F)"
+        # No unit in the name: Home Assistant shows the unit next to the value,
+        # and with alternate temperatures off the unit follows the appliance's
+        # own setting anyway.
         combined_low = (stype + " " + dom).lower()
         for kw, prefix in _TEMP_DOMAIN_LABEL.items():
             if kw in combined_low:
-                return f"{prefix} Temperature{unit_sfx}"
-        # Fallback: domain tail
+                return f"{prefix} Temperature"
+        # Fallback: domain tail, unless it is just "temperature" itself
+        # (actual.temperature would otherwise read "Temperature Temperature").
         dom_tail = dom.split(".")[-1].replace("_", " ").title() if dom else ""
+        if dom_tail.lower() == "temperature":
+            return "Temperature"
         prefix = dom_tail if dom_tail else "Ambient"
-        return f"{prefix} Temperature{unit_sfx}"
+        return f"{prefix} Temperature"
 
-    # 3. Generic camelCase conversion
+    # 3. A bare "mode" says which mode where the domain is a known one
+    if key == "mode" and dom and dom.split(".")[-1].lower() in DOMAIN_WORDS:
+        return f"{domain_words(dom.split('.')[-1])} Mode"
+
+    # 4. Generic camelCase conversion
     return _camel_to_words(key)
 
 
@@ -1017,6 +1036,7 @@ def _iter_dynamic_sensors(
     async_setup_entry) -- several _DYN_KEYS entries below have no serviceType
     restriction and would otherwise duplicate those sensors (see #48).
     """
+    show_alt_temps = entry.options.get(OPTION_SHOW_ALT_TEMPS, False)
     snap = _snapshot_for(hass, entry, device_id)
     services: Dict[str, Dict[str, Any]] = snap.get("services") or {}
     if not services:
@@ -1139,15 +1159,17 @@ def _iter_dynamic_sensors(
         stype, dom = rev.get(sid, (None, ""))
         # cooking.mode.v1 temperature keys → "Target" prefix
         if stype == "cloud.smarthq.service.cooking.mode.v1" and key in _C_KEYS | _F_KEYS:
-            unit_sfx = "" if key in _C_KEYS else " (°F)"
             if "cavity" in key.lower():
-                label = f"Cavity Target Temperature{unit_sfx}"
+                label = "Cavity Target Temperature"
             elif "probe" in key.lower():
-                label = f"Probe Target Temperature{unit_sfx}"
+                label = "Probe Target Temperature"
             else:
-                label = f"Target Temperature{unit_sfx}"
+                label = "Target Temperature"
         else:
             label = _label_for_key(key, stype or "", dom or "")
+        if show_alt_temps and key in _C_KEYS | _F_KEYS:
+            # Both units are exposed, so the pair needs telling apart.
+            label += " (°C)" if key in _C_KEYS else " (°F)"
 
         unit = dyn.unit
         dev_class = dyn.device_class
@@ -1178,15 +1200,17 @@ def _iter_dynamic_sensors(
 
         # cooking.mode.v1 temperature keys → "Target" prefix
         if stype == "cloud.smarthq.service.cooking.mode.v1" and key in _C_KEYS | _F_KEYS:
-            unit_sfx = "" if key in _C_KEYS else " (°F)"
             if "cavity" in key.lower():
-                label = f"Cavity Target Temperature{unit_sfx}"
+                label = "Cavity Target Temperature"
             elif "probe" in key.lower():
-                label = f"Probe Target Temperature{unit_sfx}"
+                label = "Probe Target Temperature"
             else:
-                label = f"Target Temperature{unit_sfx}"
+                label = "Target Temperature"
         else:
             label = _label_for_key(key, stype or "", dom or "")
+        if show_alt_temps and key in _C_KEYS | _F_KEYS:
+            # Both units are exposed, so the pair needs telling apart.
+            label += " (°C)" if key in _C_KEYS else " (°F)"
 
         if key in _C_KEYS:
             dev_class = SensorDeviceClass.TEMPERATURE
@@ -1554,6 +1578,7 @@ def _build_standard_sensors(
     stype: str,
     existing_uids: set[str],
     used_pairs: Optional[set] = None,
+    sdev: str = "",
 ) -> list[SensorEntity]:
     """Create sensor entities for a standard (data-driven) serviceType."""
     result: list[SensorEntity] = []
@@ -1561,7 +1586,7 @@ def _build_standard_sensors(
         uid = make_unique_id(device_id, service_id, f.uid)
         if uid in existing_uids:
             continue
-        label = f.label if f.label else _camel_to_words(f.key)
+        label = entity_label(dev_name, sdev, f.label if f.label else _camel_to_words(f.key))
         if f.cls == "L":
             entity: SensorEntity = SmartHQLaundryStateSensor(
                 hass, entry, device_id, service_id, dev_name, label, f.key, uid,
@@ -1632,6 +1657,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 service_id = svc.get("id") or svc.get("serviceId") or ""
                 cmds: list = svc.get("supportedCommands") or []
                 cfg = svc.get("config") or {}
+                sdev = svc.get("serviceDeviceType") or ""
 
                 # ── Allowlist check ──
                 if get_service_mapping(stype) is None:
@@ -1642,7 +1668,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
                 # ── temperature sensor (read-only) ──────────────────────────
                 if stype == TEMPERATURE_SERVICE and CMD_TEMPERATURE_SET not in cmds:
-                    sdev = svc.get("serviceDeviceType") or ""
                     # For measurement domain with two serviceDeviceType instances
                     # (Smoker: device.smoker=Cavity, device.probe=Ambient)
                     if "measurement" in dom.lower() and "smoker" in sdev.lower():
@@ -1667,6 +1692,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 elif stype == INTEGER_SERVICE and CMD_INTEGER_SET not in cmds:
                     int_units = cfg.get("integerUnits") or ""
                     label_base = cfg.get("label") or _camel_to_words(dom.split(".")[-1])
+                    label_base = entity_label(dev_name, sdev, label_base)
                     ha_unit, dev_class = _integer_units_to_ha(int_units)
                     # Integer services always carry a numeric value. When no unit
                     # or device class could be derived (unitless readings such as
@@ -1720,6 +1746,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 # ── double sensor (float value) ─────────────────────────────
                 elif stype == DOUBLE_SERVICE:
                     label_base = cfg.get("label") or _camel_to_words(dom.split(".")[-1])
+                    label_base = entity_label(dev_name, sdev, label_base)
                     uid = make_unique_id(device_id, service_id, "double")
                     if uid not in existing_uids:
                         entities.append(SmartHQServiceSensor(
@@ -1735,6 +1762,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 elif stype == STRING_SERVICE and CMD_STRING_SET not in cmds:
                     # Read-only: expose as sensor. Writable case → text.py
                     label_base = cfg.get("label") or _camel_to_words(dom.split(".")[-1])
+                    label_base = entity_label(dev_name, sdev, label_base)
                     uid = make_unique_id(device_id, service_id, "string")
                     if uid not in existing_uids:
                         entities.append(SmartHQServiceSensor(
@@ -1750,6 +1778,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     entities.extend(_build_standard_sensors(
                         hass, entry, device_id, service_id, dev_name, stype, existing_uids,
                         used_pairs,
+                        sdev=sdev,
                     ))
 
 

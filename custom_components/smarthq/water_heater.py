@@ -160,7 +160,7 @@ class SmartHQWaterHeater(WaterHeaterEntity):
         self._device_id = device_id
         self._service_id = service_id
         self._svc_config = svc_config
-        self._attr_name = f"{dev_name} Water Heater"
+        self._attr_name = None  # the device's main feature
         self._attr_unique_id = unique_id
 
         # Build supported operation modes from config
