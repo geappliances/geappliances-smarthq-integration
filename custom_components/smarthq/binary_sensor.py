@@ -9,6 +9,7 @@ from homeassistant.components.binary_sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import EntityCategory
@@ -182,6 +183,15 @@ def _iter_alert_tokens(hass: HomeAssistant, entry: ConfigEntry, did: str) -> Ite
             yield token
 
 
+def _registered_alert_tokens(hass: HomeAssistant, entry: ConfigEntry, did: str) -> Iterable[str]:
+    """Alert tokens whose entities exist in the registry; the WS store is empty after a restart."""
+    prefix = f"{DOMAIN}:{did}:alert:"
+    registry = er.async_get(hass)
+    for reg in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if reg.domain == "binary_sensor" and reg.unique_id.startswith(prefix):
+            yield reg.unique_id[len(prefix):]
+
+
 def _dev_payload(hass: HomeAssistant, entry: ConfigEntry, device_id: str) -> Dict[str, Any]:
     """Get device payload from store."""
     return _store(hass, entry).get(device_id) or {}
@@ -230,9 +240,10 @@ async def async_setup_entry(
             entities.append(SmartHQAlertBinarySensor(hass, entry, did, token))
 
     # 2) Also register any device-specific alerts already in the WS store
-    #    (e.g. alerts received before this setup_entry call, or non-common ones).
+    #    (e.g. alerts received before this setup_entry call, or non-common ones)
+    #    and those seen before a restart, which exist only in the entity registry.
     for did in _known_devices(hass, entry):
-        for token in _iter_alert_tokens(hass, entry, did):
+        for token in (*_iter_alert_tokens(hass, entry, did), *_registered_alert_tokens(hass, entry, did)):
             uid = f"{DOMAIN}:{did}:alert:{token}"
             if uid in created:
                 continue
@@ -435,11 +446,14 @@ class SmartHQAlertBinarySensor(BinarySensorEntity):
         ) or {}
 
     @property
-    def is_on(self) -> bool:
+    def is_on(self) -> bool | None:
         a = self._get_alert()
         if "active" in a:
             return bool(a["active"])
-        return bool(a)  # False when no alert data (pre-registered, not yet received)
+        if a:
+            return True
+        # No message yet: common alerts stay off, others are unknown rather than assumed cleared.
+        return False if self._token in COMMON_ALERTS else None
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
