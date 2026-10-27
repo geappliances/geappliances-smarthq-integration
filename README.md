@@ -219,11 +219,31 @@ Entities are created at startup by inspecting each device's **Services** list fr
 ### Notification / Alert Toggles
 Each device exposes a set of **notification settings** via the REST Settings API. These are surfaced as **switch entities** in the HA **Configuration** section, letting you enable or disable individual alerts (e.g. "Cycle Complete", "Door Alert") directly from Home Assistant.
 
+### Alert Events
+SmartHQ alerts are one-off notifications, and most are never followed by a clear message, so the
+per-alert binary sensors stay `on` after the first occurrence. To react to an alert, trigger on the
+device's **Alert** event entity instead. Its state is the time of the last alert, so trigger on any
+state change and check `event_type` (the alert name without the `cloud.smarthq.alert.` prefix):
+
+```yaml
+triggers:
+  - trigger: state
+    entity_id: event.combination_washer_dryer_alert
+    not_from: unavailable
+conditions:
+  - condition: template
+    value_template: "{{ trigger.to_state.attributes.event_type == 'endofcycle.minutesleft.5' }}"
+```
+
+Every alert is also fired on the HA event bus as `smarthq_alert` (`device_id`, `alert_type`,
+`active`, `data`).
+
 ### Entity Platforms
 | Platform | Purpose |
 |---|---|
 | **sensor** | Status, temperatures, timers, energy, signal strength |
 | **binary_sensor** | Door open, filter status, problem alerts |
+| **event** | One `Alert` entity per device that fires on every SmartHQ alert (cycle start/end, minutes left, door open) |
 | **switch** | On/off toggles (lock, light, smoke) + notification alert toggles |
 | **select** | Cooking/laundry modes, brew settings, temperature units |
 | **number** | Adjustable setpoints (temperature, timer, smoke level) |
