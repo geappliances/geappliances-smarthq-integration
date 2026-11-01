@@ -211,6 +211,7 @@ def _build_service_call(
 class _GetAppliancesTool(llm.Tool):
     """List all SmartHQ appliances known to Home Assistant."""
 
+    integration = DOMAIN
     name = "smarthq_list_appliances"
     description = (
         "List the GE Appliances (SmartHQ) connected to this home, with their "
@@ -240,6 +241,7 @@ class _GetAppliancesTool(llm.Tool):
 class _GetApplianceStatusTool(llm.Tool):
     """Return detailed structured status for a single SmartHQ appliance."""
 
+    integration = DOMAIN
     name = "smarthq_get_appliance_status"
     description = (
         "Get the detailed current status of one GE Appliances (SmartHQ) "
@@ -290,6 +292,7 @@ class _GetApplianceStatusTool(llm.Tool):
 class _ControlApplianceTool(llm.Tool):
     """Control a SmartHQ appliance via its HA entities (gated control)."""
 
+    integration = DOMAIN
     name = "smarthq_control_appliance"
     description = (
         "Control a GE Appliances (SmartHQ) appliance by setting one of its Home "
@@ -466,6 +469,7 @@ def _completion_sensor_for(hass: HomeAssistant, device_id: str) -> str | None:
 class _CreateCompletionAutomationTool(llm.Tool):
     """Create a persistent automation that runs when an appliance finishes."""
 
+    integration = DOMAIN
     name = "smarthq_create_completion_automation"
     description = (
         "Create a PERSISTENT Home Assistant automation that runs a set of "
