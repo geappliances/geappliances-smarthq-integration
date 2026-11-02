@@ -15,6 +15,7 @@ from homeassistant.helpers.entity import EntityCategory
 
 from .const import DOMAIN
 from .dispatcher import SIGNAL_DEVICE_UPDATED
+from .sensor import _camel_to_words
 from .service_registry import (
     FIRMWARE_SERVICE,
     DOOR_SERVICE,
@@ -470,6 +471,15 @@ class SmartHQAlertBinarySensor(BinarySensorEntity):
         self.async_write_ha_state()
 
 
+def _door_flags(st: dict) -> Dict[str, bool]:
+    """Per-door booleans of a multi-door service.
+
+    A refrigerator reports topLeftOpen, topRightOpen, topRightDoorInDoorOpen,
+    middleOpen and bottomOpen instead of a single doorState.
+    """
+    return {k: v for k, v in st.items() if k.endswith("Open") and isinstance(v, bool)}
+
+
 class SmartHQDoorBinarySensor(BinarySensorEntity):
     """Binary sensor for door open/close state (door service)."""
 
@@ -499,10 +509,13 @@ class SmartHQDoorBinarySensor(BinarySensorEntity):
 
     @property
     def is_on(self) -> bool:
-        """Return True when door is open."""
+        """Return True when any door is open."""
         st = self._get_state()
         raw = st.get("doorState") or st.get("state") or st.get("open")
         if raw is None:
+            flags = _door_flags(st)
+            if flags:
+                return any(flags.values())
             # Toggle-shaped door services carry {"on": bool}. Checked last so a
             # genuine doorState always wins: ws_client normalises `enabled` and
             # `mode` into `on` for every service, so `on` may be present but
@@ -514,6 +527,12 @@ class SmartHQDoorBinarySensor(BinarySensorEntity):
         if isinstance(raw, bool):
             return raw
         return str(raw).lower() in {"open", "true", "1"}
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, bool]:
+        # topLeftOpen -> top_left_open
+        flags = _door_flags(self._get_state())
+        return {_camel_to_words(k).lower().replace(" ", "_"): v for k, v in flags.items()}
 
     @property
     def available(self) -> bool:

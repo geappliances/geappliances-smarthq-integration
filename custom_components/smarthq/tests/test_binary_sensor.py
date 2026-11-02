@@ -51,6 +51,18 @@ def test_door_state_wins_over_normalised_on():
     assert _create_door_entity({"doorState": "open", "on": False}).is_on is True
 
 
+def test_multi_door_open_when_any_door_open():
+    """A multi-door service (per-door flags, no doorState) is on while any door is open."""
+    entity = _create_door_entity({"topLeftOpen": False, "bottomOpen": True})
+    assert entity.is_on is True
+    assert entity.extra_state_attributes == {"top_left_open": False, "bottom_open": True}
+
+
+def test_multi_door_closed_when_all_doors_closed():
+    """A multi-door service is off when every per-door flag is false."""
+    assert _create_door_entity({"topLeftOpen": False, "bottomOpen": False}).is_on is False
+
+
 def test_unavailable_when_service_missing():
     """An entity with no service state in the store is unavailable."""
     entity = _create_door_entity({})
