@@ -13,12 +13,19 @@ ENERGY_SAVER_MODE = "cloud.smarthq.type.thermostatmode.cool.energysaver"
 NATIVE_AUTO_MODE = "cloud.smarthq.type.thermostatmode.auto"
 
 
-def _create_entity(*supported_modes: str) -> tuple[SmartHQThermostatClimate, AsyncMock]:
+def _create_entity(
+    *supported_modes: str,
+    device_model: str | None = None,
+    cool_minimum: float | None = None,
+) -> tuple[SmartHQThermostatClimate, AsyncMock]:
     hass = MagicMock()
     hass.data = {DOMAIN: {"test-entry": {"store": {}}}}
     entry = MagicMock()
     entry.entry_id = "test-entry"
     client = AsyncMock()
+    svc_config = {"supportedModes": list(supported_modes)}
+    if cool_minimum is not None:
+        svc_config["coolFahrenheitMinimum"] = cool_minimum
     entity = SmartHQThermostatClimate(
         hass=hass,
         entry=entry,
@@ -26,8 +33,9 @@ def _create_entity(*supported_modes: str) -> tuple[SmartHQThermostatClimate, Asy
         device_id="test-device",
         service_id="test-thermostat",
         dev_name="Test AC",
-        svc_config={"supportedModes": list(supported_modes)},
+        svc_config=svc_config,
         unique_id="test-climate",
+        dev_model=device_model,
     )
     return entity, client
 
@@ -112,3 +120,24 @@ def test_hvac_action_reports_off_and_fan_only() -> None:
 
     _set_thermostat_state(entity, on=False, mode=fan_mode)
     assert entity.hvac_action == HVACAction.OFF
+
+
+def test_awcs08wwt_enforces_effective_64f_minimum() -> None:
+    """Clamp the AWCS08WWT's incorrectly advertised 62 F minimum to 64 F."""
+    cool_mode = "cloud.smarthq.type.thermostatmode.cool"
+    entity, client = _create_entity(
+        cool_mode,
+        device_model="AWCS08WWT",
+        cool_minimum=62,
+    )
+    _set_thermostat_state(entity, mode=cool_mode)
+
+    assert entity.min_temp == 64
+
+    asyncio.run(entity.async_set_temperature(temperature=62))
+
+    client.async_set_thermostat.assert_awaited_once_with(
+        "test-device",
+        "test-thermostat",
+        coolFahrenheit=64.0,
+    )
