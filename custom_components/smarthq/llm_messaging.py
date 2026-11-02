@@ -34,7 +34,13 @@ _EVENT_TELEGRAM_TEXT = "telegram_text"
 
 
 def async_expose_entry_entities(hass: HomeAssistant, entry_id: str) -> int:
-    """Expose all of a config entry's entities to the Assist assistant.
+    """Expose a config entry's not-yet-configured entities to Assist.
+
+    Runs on every setup (restart/reload), so this only sets ``should_expose``
+    for entities that don't already have an explicit per-assistant setting --
+    otherwise it would silently re-expose entities a user had un-exposed via
+    the Voice Assistants UI (#60). Registry-disabled entities are skipped
+    since they can never be served to Assist anyway.
 
     Returns the number of entities exposed. Fails soft (returns 0) if the
     exposed-entities helper is unavailable on this Home Assistant version.
@@ -42,6 +48,7 @@ def async_expose_entry_entities(hass: HomeAssistant, entry_id: str) -> int:
     try:
         from homeassistant.components.homeassistant.exposed_entities import (
             async_expose_entity,
+            async_get_entity_settings,
         )
     except Exception as err:  # noqa: BLE001 - optional helper
         _LOGGER.debug("[MSG] Entity exposure helper unavailable: %s", err)
@@ -50,7 +57,14 @@ def async_expose_entry_entities(hass: HomeAssistant, entry_id: str) -> int:
     ent_reg = er.async_get(hass)
     count = 0
     for ent in er.async_entries_for_config_entry(ent_reg, entry_id):
+        if ent.disabled_by is not None:
+            continue
         try:
+            existing = async_get_entity_settings(hass, ent.entity_id).get(
+                _ASSISTANT_CONVERSATION, {}
+            )
+            if "should_expose" in existing:
+                continue
             async_expose_entity(
                 hass, _ASSISTANT_CONVERSATION, ent.entity_id, True
             )
