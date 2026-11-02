@@ -1,8 +1,20 @@
-"""Tests for the SmartHQ entity naming helpers."""
+"""Tests for the SmartHQ entity naming helpers and the names discovery gives entities."""
 
-from custom_components.smarthq.const import entity_label, sdev_prefix, strip_device_name
+import asyncio
+from unittest.mock import MagicMock
+
+from custom_components.smarthq.const import DOMAIN, entity_label, sdev_prefix, strip_device_name
+from custom_components.smarthq.sensor import async_setup_entry as sensor_setup
+from custom_components.smarthq.service_registry import (
+    CMD_TOGGLE_SET,
+    STRING_SERVICE,
+    TOGGLE_SERVICE,
+    make_unique_id,
+)
+from custom_components.smarthq.switch import async_setup_entry as switch_setup
 
 FRIDGE = "cloud.smarthq.device.refrigerator"
+DEVICE_ID = "test-device"
 
 
 def test_strip_device_name_drops_leading_device_name():
@@ -55,3 +67,57 @@ def test_entity_label_adds_sub_device_once():
 
 def test_entity_label_without_sub_device():
     assert entity_label("Refrigerator", FRIDGE, "Refrigerator Light Wall") == "Light Wall"
+
+
+def _discover(platform, *services: dict) -> list:
+    """Run a platform's discovery for one refrigerator with the given services."""
+    hass = MagicMock()
+    entry = MagicMock()
+    entry.entry_id = "test-entry"
+    entry.options = {}
+    coordinator = MagicMock()
+    coordinator.data = {
+        DEVICE_ID: {"info": {"nickname": "Refrigerator"}, "item": {"services": list(services)}},
+    }
+    hass.data = {DOMAIN: {"test-entry": {"client": MagicMock(), "coordinator": coordinator, "store": {}}}}
+    added: list = []
+    asyncio.run(platform(hass, entry, lambda entities, **kwargs: added.extend(entities)))
+    return added
+
+
+def _service(service_id: str, service_type: str, domain: str, device_type: str) -> dict:
+    return {
+        "id": service_id,
+        "serviceType": service_type,
+        "domainType": domain,
+        "serviceDeviceType": device_type,
+        "supportedCommands": [CMD_TOGGLE_SET] if service_type == TOGGLE_SERVICE else [],
+    }
+
+
+def test_switch_discovery_keeps_unique_ids_and_count():
+    """Refrigerator toggles get readable names; unique IDs and the entity count are unchanged."""
+    switches = _discover(
+        switch_setup,
+        _service("svc-lock", TOGGLE_SERVICE, "cloud.smarthq.domain.controls.lock", "cloud.smarthq.device.appliance"),
+        _service("svc-power", TOGGLE_SERVICE, "cloud.smarthq.domain.power", "cloud.smarthq.device.icemaker.1"),
+    )
+    assert sorted(s.unique_id for s in switches) == [
+        make_unique_id(DEVICE_ID, "svc-lock", "toggle"),
+        make_unique_id(DEVICE_ID, "svc-power", "toggle"),
+    ]
+    assert sorted(s._attr_name for s in switches) == ["Control Lock", "Ice Maker Power"]
+
+
+def test_sensor_discovery_keeps_unique_ids_and_count():
+    """Sub-device string readings get the component name; unique IDs and the entity count are unchanged."""
+    sensors = _discover(
+        sensor_setup,
+        _service("svc-model", STRING_SERVICE, "cloud.smarthq.domain.model", "cloud.smarthq.device.waterfilter"),
+        _service("svc-location", STRING_SERVICE, "cloud.smarthq.domain.location", "cloud.smarthq.device.icemaker.1"),
+    )
+    assert sorted(s.unique_id for s in sensors) == [
+        make_unique_id(DEVICE_ID, "svc-location", "string"),
+        make_unique_id(DEVICE_ID, "svc-model", "string"),
+    ]
+    assert sorted(s.entity_description.name for s in sensors) == ["Ice Maker Location", "Water Filter Model"]
