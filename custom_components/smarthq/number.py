@@ -459,7 +459,7 @@ class SmartHQAutoWarmHoursNumber(_SmartHQAutoWarmDurationBase):
 
     def __init__(self, hass, entry, device_id, service_id, dev_name, unique_id):
         super().__init__(hass, entry, device_id, service_id, dev_name, unique_id)
-        self._attr_name = "Keep Warm Time Hours"
+        self._attr_name = f"{dev_name} Keep Warm Time Hours"
 
     @property
     def native_value(self) -> float | None:
@@ -495,7 +495,7 @@ class SmartHQAutoWarmMinutesNumber(_SmartHQAutoWarmDurationBase):
 
     def __init__(self, hass, entry, device_id, service_id, dev_name, unique_id):
         super().__init__(hass, entry, device_id, service_id, dev_name, unique_id)
-        self._attr_name = "Keep Warm Time Minutes"
+        self._attr_name = f"{dev_name} Keep Warm Time Minutes"
 
     @property
     def native_value(self) -> float | None:
@@ -690,7 +690,7 @@ class SmartHQCookTimeNumber(_SmartHQSmokerBase):
 
     def __init__(self, hass, entry, device_id, dev_name, unique_id, has_probe: bool = False):
         super().__init__(hass, entry, device_id, dev_name, unique_id)
-        self._attr_name = "Cook Time"
+        self._attr_name = f"{dev_name} Cook Time"
         self._has_probe = has_probe
 
     async def async_added_to_hass(self) -> None:
@@ -776,7 +776,7 @@ class SmartHQSmokeLevelNumber(_SmartHQSmokerBase):
 
     def __init__(self, hass, entry, device_id, dev_name, unique_id):
         super().__init__(hass, entry, device_id, dev_name, unique_id)
-        self._attr_name = "Smoke Level"
+        self._attr_name = f"{dev_name} Smoke Level"
 
     @property
     def native_value(self) -> Optional[float]:
