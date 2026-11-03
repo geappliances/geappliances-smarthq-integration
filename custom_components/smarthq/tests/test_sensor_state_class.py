@@ -3,10 +3,11 @@
 import asyncio
 from unittest.mock import MagicMock
 
+import pytest
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 from homeassistant.const import UnitOfPower, UnitOfTemperature
 
-from custom_components.smarthq.const import DOMAIN
+from custom_components.smarthq.const import DOMAIN, OPTION_SHOW_ALT_TEMPS
 from custom_components.smarthq.sensor import (
     SmartHQRawTempSensor,
     SmartHQSnapshotSensor,
@@ -79,6 +80,37 @@ def test_snapshot_temperature_key_is_measurement():
         None, None, None, SERVICE_ID,
     )
     assert sensor.state_class == SensorStateClass.MEASUREMENT
+
+
+@pytest.mark.parametrize("show_alt", [False, True])
+@pytest.mark.parametrize("initial_fahrenheit", [False, True])
+@pytest.mark.parametrize("state_key", ["fahrenheit", "celsiusConverted"])
+def test_snapshot_temperature_units_follow_option(show_alt, initial_fahrenheit, state_key):
+    """Alternate keys stay fixed while normal sensors follow appliance changes."""
+    hass, entry = _hass_and_entry()
+    entry.options = {OPTION_SHOW_ALT_TEMPS: show_alt}
+    bucket = hass.data[DOMAIN][entry.entry_id]
+    bucket["temp_unit_cache"] = {DEVICE_ID: initial_fahrenheit}
+    bucket["store"] = {
+        DEVICE_ID: {"snapshot": {"services": {
+            SERVICE_ID: {"fahrenheit": 37, "celsiusConverted": 2.7777777778},
+        }}},
+    }
+    sensor = SmartHQSnapshotSensor(
+        hass, entry, DEVICE_ID, "Temperature", state_key,
+        None, None, None, SERVICE_ID,
+    )
+    original_id = sensor.unique_id
+    for appliance_fahrenheit in (initial_fahrenheit, not initial_fahrenheit):
+        bucket["temp_unit_cache"][DEVICE_ID] = appliance_fahrenheit
+        reports_fahrenheit = state_key == "fahrenheit" if show_alt else appliance_fahrenheit
+        expected_unit = (
+            UnitOfTemperature.FAHRENHEIT if reports_fahrenheit else UnitOfTemperature.CELSIUS
+        )
+        assert sensor.native_unit_of_measurement == expected_unit
+        assert sensor.native_value == (37 if reports_fahrenheit else 2.8)
+        assert sensor.unique_id == original_id
+        assert sensor.state_class == SensorStateClass.MEASUREMENT
 
 
 def test_snapshot_other_key_unchanged():
