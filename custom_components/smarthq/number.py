@@ -19,7 +19,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME, sdev_prefix
+from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME, sdev_prefix, strip_device_name
 from .dispatcher import SIGNAL_DEVICE_UPDATED, SIGNAL_COOK_MODE_CHANGED
 from .sensor import _snapshot_for, _dev_payload, _device_info_for, _integer_units_to_ha
 from .service_registry import (
@@ -185,7 +185,7 @@ class _SmartHQNumberBase(NumberEntity):
         self._entry = entry
         self._device_id = device_id
         self._service_id = service_id
-        self._attr_name = f"{dev_name} {label}"
+        self._attr_name = strip_device_name(dev_name, label)
         self._attr_unique_id = unique_id
 
     def _get_state(self) -> dict:
