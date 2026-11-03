@@ -21,7 +21,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME, sdev_prefix
+from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME, sdev_prefix, strip_device_name, domain_words
 from .dispatcher import SIGNAL_DEVICE_UPDATED, SIGNAL_COOK_MODE_CHANGED
 from .service_registry import (
     MODE_SERVICE,
@@ -694,10 +694,10 @@ class SmartHQModeSelect(SelectEntity):
         self._dom = dom  # store for temperatureunits detection
 
         # Label from domain tail, with optional serviceDeviceType prefix
-        dom_tail = dom.split(".")[-1].replace("_", " ").title() if dom else "Mode"
+        dom_tail = domain_words(dom.split(".")[-1]) if dom else "Mode"
         _prefix = sdev_prefix(sdev)
         label = f"{_prefix} {dom_tail}".strip() if _prefix else dom_tail
-        self._attr_name = f"{dev_name} {label}"
+        self._attr_name = strip_device_name(dev_name, label)
         self._attr_icon = None
 
         if disabled_by_default:
@@ -1750,7 +1750,7 @@ class SmartHQTemperatureSetpointSelect(SelectEntity):
         self._max_f = max_f
         self._warm_mode_only = warm_mode_only
         self._attr_unique_id = unique_id
-        self._attr_name = f"{dev_name} {label}"
+        self._attr_name = strip_device_name(dev_name, label)
         if disabled_by_default:
             self._attr_entity_registry_enabled_default = False
             self._attr_entity_category = EntityCategory.DIAGNOSTIC
@@ -2224,7 +2224,7 @@ class SmartHQGenericModeSelect(SelectEntity):
         self._service_id = service_id
         self._command_type = command_type
         self._attr_unique_id = unique_id
-        self._attr_name = f"{dev_name} {label}"
+        self._attr_name = strip_device_name(dev_name, label)
 
         self._token_to_name: Dict[str, str] = {}
         self._name_to_token: Dict[str, str] = {}
@@ -3185,7 +3185,7 @@ class _SmartHQIntegerTimeBase(SelectEntity):
         self._client = client
         self._device_id = device_id
         self._service_id = service_id
-        self._attr_name = f"{dev_name} {label}"
+        self._attr_name = strip_device_name(dev_name, label)
         self._attr_unique_id = unique_id
         self._attr_entity_registry_enabled_default = not disabled_by_default
 

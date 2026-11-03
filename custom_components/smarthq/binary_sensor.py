@@ -9,12 +9,14 @@ from homeassistant.components.binary_sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import EntityCategory
 
 from .const import DOMAIN
 from .dispatcher import SIGNAL_DEVICE_UPDATED
+from .sensor import _camel_to_words
 from .service_registry import (
     FIRMWARE_SERVICE,
     DOOR_SERVICE,
@@ -182,6 +184,15 @@ def _iter_alert_tokens(hass: HomeAssistant, entry: ConfigEntry, did: str) -> Ite
             yield token
 
 
+def _registered_alert_tokens(hass: HomeAssistant, entry: ConfigEntry, did: str) -> Iterable[str]:
+    """Alert tokens whose entities exist in the registry; the WS store is empty after a restart."""
+    prefix = f"{DOMAIN}:{did}:alert:"
+    registry = er.async_get(hass)
+    for reg in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if reg.domain == "binary_sensor" and reg.unique_id.startswith(prefix):
+            yield reg.unique_id[len(prefix):]
+
+
 def _dev_payload(hass: HomeAssistant, entry: ConfigEntry, device_id: str) -> Dict[str, Any]:
     """Get device payload from store."""
     return _store(hass, entry).get(device_id) or {}
@@ -230,9 +241,10 @@ async def async_setup_entry(
             entities.append(SmartHQAlertBinarySensor(hass, entry, did, token))
 
     # 2) Also register any device-specific alerts already in the WS store
-    #    (e.g. alerts received before this setup_entry call, or non-common ones).
+    #    (e.g. alerts received before this setup_entry call, or non-common ones)
+    #    and those seen before a restart, which exist only in the entity registry.
     for did in _known_devices(hass, entry):
-        for token in _iter_alert_tokens(hass, entry, did):
+        for token in (*_iter_alert_tokens(hass, entry, did), *_registered_alert_tokens(hass, entry, did)):
             uid = f"{DOMAIN}:{did}:alert:{token}"
             if uid in created:
                 continue
@@ -310,7 +322,8 @@ async def async_setup_entry(
                     if uid not in created:
                         created.add(uid)
                         dom = svc.get("domainType") or ""
-                        label = dom.split(".")[-1].replace("_", " ").title() + " Door"
+                        tail = dom.split(".")[-1].replace("_", " ").title()
+                        label = "Door" if tail == "Door" else f"{tail} Door"
                         coord_entities.append(
                             SmartHQDoorBinarySensor(hass, entry, device_id, service_id, label, uid)
                         )
@@ -413,6 +426,35 @@ async def async_setup_entry(
         )
 
 
+# Alert codes GE sends are run-together words ("enhancedfeature.supportedchanged").
+# Known full codes get a readable name; otherwise each part is looked up here
+# and anything unknown is title-cased.
+_ALERT_NAMES: dict[str, str] = {
+    "door.open.freezer": "Freezer Door Open",
+    "door.alarm.freezer": "Freezer Door Alarm",
+    "left.door.alarm.freshfood": "Fresh Food Left Door Alarm",
+    "right.door.alarm.freshfood": "Fresh Food Right Door Alarm",
+    "ota.update": "Firmware Update",
+    "ota.update.critical": "Critical Firmware Update",
+}
+_ALERT_WORDS: dict[str, str] = {
+    "contractormode": "Contractor Mode",
+    "enhancedfeature": "Enhanced Feature",
+    "supportedchanged": "Supported Changed",
+    "freshfood": "Fresh Food",
+    "icemaker": "Ice Maker",
+    "waterfilter": "Water Filter",
+    "ota": "OTA",
+}
+
+
+def _alert_name(token: str) -> str:
+    code = token.replace("cloud.smarthq.alert.", "")
+    if code in _ALERT_NAMES:
+        return _ALERT_NAMES[code]
+    return " ".join(_ALERT_WORDS.get(part, part.replace("_", " ").title()) for part in code.split("."))
+
+
 class SmartHQAlertBinarySensor(BinarySensorEntity):
     _attr_should_poll = False
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
@@ -423,8 +465,9 @@ class SmartHQAlertBinarySensor(BinarySensorEntity):
         self._entry = entry
         self._device_id = device_id
         self._token = token
-        nice = token.split(".")[-1].replace("_", " ").title()
-        self._attr_name = f"Alert: {nice}"
+        # The whole alert code, not its last word: "door.open.freezer" and
+        # "door.alarm.freezer" must not both become "Alert: Freezer".
+        self._attr_name = f"Alert: {_alert_name(token)}"
         self._attr_unique_id = f"{DOMAIN}:{device_id}:alert:{token}"
 
     def _get_alert(self) -> dict:
@@ -435,11 +478,14 @@ class SmartHQAlertBinarySensor(BinarySensorEntity):
         ) or {}
 
     @property
-    def is_on(self) -> bool:
+    def is_on(self) -> bool | None:
         a = self._get_alert()
         if "active" in a:
             return bool(a["active"])
-        return bool(a)  # False when no alert data (pre-registered, not yet received)
+        if a:
+            return True
+        # No message yet: common alerts stay off, others are unknown rather than assumed cleared.
+        return False if self._token in COMMON_ALERTS else None
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
@@ -468,6 +514,15 @@ class SmartHQAlertBinarySensor(BinarySensorEntity):
     def _signal_update(self) -> None:
         """Handle device update signal."""
         self.async_write_ha_state()
+
+
+def _door_flags(st: dict) -> Dict[str, bool]:
+    """Per-door booleans of a multi-door service.
+
+    A refrigerator reports topLeftOpen, topRightOpen, topRightDoorInDoorOpen,
+    middleOpen and bottomOpen instead of a single doorState.
+    """
+    return {k: v for k, v in st.items() if k.endswith("Open") and isinstance(v, bool)}
 
 
 class SmartHQDoorBinarySensor(BinarySensorEntity):
@@ -499,10 +554,13 @@ class SmartHQDoorBinarySensor(BinarySensorEntity):
 
     @property
     def is_on(self) -> bool:
-        """Return True when door is open."""
+        """Return True when any door is open."""
         st = self._get_state()
         raw = st.get("doorState") or st.get("state") or st.get("open")
         if raw is None:
+            flags = _door_flags(st)
+            if flags:
+                return any(flags.values())
             # Toggle-shaped door services carry {"on": bool}. Checked last so a
             # genuine doorState always wins: ws_client normalises `enabled` and
             # `mode` into `on` for every service, so `on` may be present but
@@ -514,6 +572,12 @@ class SmartHQDoorBinarySensor(BinarySensorEntity):
         if isinstance(raw, bool):
             return raw
         return str(raw).lower() in {"open", "true", "1"}
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, bool]:
+        # topLeftOpen -> top_left_open
+        flags = _door_flags(self._get_state())
+        return {_camel_to_words(k).lower().replace(" ", "_"): v for k, v in flags.items()}
 
     @property
     def available(self) -> bool:

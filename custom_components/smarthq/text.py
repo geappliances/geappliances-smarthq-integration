@@ -14,7 +14,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME
+from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME, strip_device_name
 from .dispatcher import SIGNAL_DEVICE_UPDATED
 from .service_registry import (
     STRING_SERVICE,
@@ -169,7 +169,7 @@ class SmartHQStringTextEntity(TextEntity):
         self._device_id = device_id
         self._service_id = service_id
         self._attr_unique_id = unique_id
-        self._attr_name = f"{dev_name} {label}"
+        self._attr_name = strip_device_name(dev_name, label)
         self._attr_native_value: Optional[str] = None
 
     def _get_state(self) -> Dict[str, Any]:

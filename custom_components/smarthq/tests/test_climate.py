@@ -3,6 +3,7 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from homeassistant.components.climate import HVACAction, HVACMode
 
 from custom_components.smarthq.climate import SmartHQThermostatClimate
@@ -197,15 +198,34 @@ def test_current_temperature_converts_celsius_when_fahrenheit_is_missing() -> No
 def test_temperature_labels_distinguish_indoor_outdoor_and_setpoint() -> None:
     temp = TEMPERATURE_SERVICE
     assert _label_for_key(
-        "fahrenheit", temp, "cloud.smarthq.domain.indoor.ambient", include_temp_unit=False
+        "fahrenheit", temp, "cloud.smarthq.domain.indoor.ambient"
     ) == "Indoor Ambient Temperature"
     assert _label_for_key(
-        "fahrenheit", temp, "cloud.smarthq.domain.outdoor.ambient", include_temp_unit=False
+        "fahrenheit", temp, "cloud.smarthq.domain.outdoor.ambient"
     ) == "Outdoor Ambient Temperature"
     assert _label_for_key(
         "fahrenheit",
         temp,
         "cloud.smarthq.domain.indoor",
         service_device_type="cloud.smarthq.device.outlet",
-        include_temp_unit=False,
     ) == "Indoor Target Temperature"
+
+
+@pytest.mark.parametrize("domain,expected", [
+    ("cloud.smarthq.domain.ambient", 71),
+    ("cloud.smarthq.domain.measurement", 71),
+    ("cloud.smarthq.domain.outdoor.ambient", None),
+    ("cloud.smarthq.domain.indoor", None),
+])
+def test_current_temperature_only_uses_measured_ambient_fallback(domain, expected):
+    entity, _ = _create_entity()
+    entity.hass.data[DOMAIN]["test-entry"]["store"] = {
+        "test-device": {"snapshot": {"services": {
+            "temperature": {
+                "serviceType": TEMPERATURE_SERVICE,
+                "domainType": domain,
+                "fahrenheit": 71,
+            },
+        }}},
+    }
+    assert entity.current_temperature == expected

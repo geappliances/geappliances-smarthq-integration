@@ -30,7 +30,16 @@ import logging
 
 _LOGGER = logging.getLogger(__name__)
 
-from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME, sdev_prefix, OPTION_SHOW_ALT_TEMPS
+from .const import (
+    DOMAIN,
+    MANUFACTURER,
+    DEFAULT_NAME,
+    sdev_prefix,
+    OPTION_SHOW_ALT_TEMPS,
+    entity_label,
+    DOMAIN_WORDS,
+    domain_words,
+)
 from .dispatcher import SIGNAL_DEVICE_UPDATED
 from .service_registry import (
     TEMPERATURE_SERVICE,
@@ -363,14 +372,14 @@ def _label_for_key(
     dom: str = "",
     *,
     service_device_type: str = "",
-    include_temp_unit: bool = True,
 ) -> str:
     """Generate a human-readable label for any state_key with optional context.
 
     Dispatch order:
       1. Time keys  → _label_for_time_key (domain-aware)
-            2. Temperature keys → domain-aware prefix and optional unit suffix
-      3. Everything else → _camel_to_words(key)
+      2. Temperature keys → domain-aware prefix + "Temperature"
+      3. "mode" on a known domain → that domain's words + "Mode"
+      4. Everything else → _camel_to_words(key)
     """
     # 1. Time keys
     if key in _KEY_TIME_SUFFIX:
@@ -379,23 +388,29 @@ def _label_for_key(
     # 2. Temperature keys: derive prefix from domainType / serviceType
     if key in _C_KEYS or key in _F_KEYS:
         domain_parts = set(dom.lower().split("."))
-        unit_sfx = " (°F)" if include_temp_unit and key in _F_KEYS else ""
         if {"indoor", "ambient"}.issubset(domain_parts):
-            return f"Indoor Ambient Temperature{unit_sfx}"
+            return "Indoor Ambient Temperature"
         if {"outdoor", "ambient"}.issubset(domain_parts):
-            return f"Outdoor Ambient Temperature{unit_sfx}"
+            return "Outdoor Ambient Temperature"
         if "indoor" in domain_parts and service_device_type.lower().endswith(".outlet"):
-            return f"Indoor Target Temperature{unit_sfx}"
+            return "Indoor Target Temperature"
         combined_low = (stype + " " + dom).lower()
         for kw, prefix in _TEMP_DOMAIN_LABEL.items():
             if kw in combined_low:
-                return f"{prefix} Temperature{unit_sfx}"
-        # Fallback: domain tail
+                return f"{prefix} Temperature"
+        # Fallback: domain tail, unless it is just "temperature" itself
+        # (actual.temperature would otherwise read "Temperature Temperature").
         dom_tail = dom.split(".")[-1].replace("_", " ").title() if dom else ""
+        if dom_tail.lower() == "temperature":
+            return "Temperature"
         prefix = dom_tail if dom_tail else "Ambient"
-        return f"{prefix} Temperature{unit_sfx}"
+        return f"{prefix} Temperature"
 
-    # 3. Generic camelCase conversion
+    # 3. A bare "mode" says which mode where the domain is a known one
+    if key == "mode" and dom and dom.split(".")[-1].lower() in DOMAIN_WORDS:
+        return f"{domain_words(dom.split('.')[-1])} Mode"
+
+    # 4. Generic camelCase conversion
     return _camel_to_words(key)
 
 
@@ -464,7 +479,9 @@ class SmartHQSnapshotSensor(SensorEntity):
         # Do NOT set _attr_native_unit_of_measurement or _attr_device_class for
         # temp keys — HA caches _attr_ values and they take priority over properties.
         self._is_temp_key = state_key in _C_KEYS or state_key in _F_KEYS
-        if not self._is_temp_key:
+        if self._is_temp_key:
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+        else:
             self._attr_native_unit_of_measurement = unit
             self._attr_device_class = device_class
 
@@ -532,6 +549,13 @@ class SmartHQSnapshotSensor(SensorEntity):
         return self._fixed_device_class
 
     def _reports_fahrenheit(self) -> bool:
+        """Which unit this temperature sensor reports.
+
+        Normally the sensor follows the appliance's own unit setting, so an
+        existing entity switches from °F to °C when the user changes the
+        appliance. With alternate temperatures on there is a sensor per unit,
+        and each keeps the unit its key implies.
+        """
         if self._entry.options.get(OPTION_SHOW_ALT_TEMPS, False):
             return self._state_key in _F_KEYS
         return _device_temp_is_f(self.hass, self._entry, self._device_id)
@@ -768,21 +792,24 @@ class SmartHQServiceSensor(SensorEntity):
 
 
 class SmartHQTempSensor(SmartHQServiceSensor):
-    """Temperature sensor whose unit follows the device's temperatureunits setting.
+    """Temperature sensor following the appliance unit unless a fixed unit is given.
 
-    A single entity is created per temperature service (replacing the old
-    separate °C / °F pair).  The sensor always reads the Fahrenheit snapshot
-    key and converts the value on-the-fly when the device is in Celsius mode.
+    Alternate temperatures use a fixed Fahrenheit/Celsius pair. Otherwise a
+    single entity follows the appliance setting. Values are read in Fahrenheit
+    and converted when reporting Celsius.
 
     For devices that don't send WS updates (e.g. Refrigerator), falls back to
     the initial state from coordinator.data.
     """
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(
         self,
         hass, entry, device_id, service_id, dev_name,
         label: str, unique_id: str,
         translation_key: Optional[str] = None,
+        fixed_unit: Optional[str] = None,
     ) -> None:
         # Pass unit=None so SmartHQServiceSensor.__init__ does NOT set
         # _attr_native_unit_of_measurement — our property must take priority.
@@ -793,6 +820,7 @@ class SmartHQTempSensor(SmartHQServiceSensor):
             unique_id,
             translation_key=translation_key,
         )
+        self._fixed_unit = fixed_unit
 
     # device_class is intentionally NOT set to SensorDeviceClass.TEMPERATURE.
     # See SmartHQRawTempSensor for the explanation.
@@ -819,6 +847,8 @@ class SmartHQTempSensor(SmartHQServiceSensor):
 
     @property
     def native_unit_of_measurement(self) -> str:
+        if self._fixed_unit is not None:
+            return self._fixed_unit
         return (
             UnitOfTemperature.FAHRENHEIT
             if _device_temp_is_f(self.hass, self._entry, self._device_id)
@@ -835,7 +865,7 @@ class SmartHQTempSensor(SmartHQServiceSensor):
             f_val = float(raw)
         except (TypeError, ValueError):
             return raw
-        if _device_temp_is_f(self.hass, self._entry, self._device_id):
+        if self.native_unit_of_measurement == UnitOfTemperature.FAHRENHEIT:
             return round(f_val, 1)
         return round((f_val - 32) * 5 / 9, 1)
 
@@ -857,6 +887,8 @@ class SmartHQRawTempSensor(SmartHQServiceSensor):
     _device_temp_is_f(), which checks the cache, WS snapshot, coordinator data,
     and HA system unit in that priority order.
     """
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(
         self,
@@ -912,9 +944,14 @@ class SmartHQRawTempSensor(SmartHQServiceSensor):
 
 
 class SmartHQMeterSensor(SmartHQServiceSensor):
-    """Sensor for meter services (cumulative energy, water, etc.)."""
+    """Sensor for meter services (cumulative energy, water, etc.).
 
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    Only energy/water meterValues are actually cumulative; voltage/power/current
+    are instantaneous readings and must use MEASUREMENT, not TOTAL_INCREASING —
+    HA logs a state_class validation warning otherwise (#51).
+    """
+
+    _CUMULATIVE_DEVICE_CLASSES = frozenset({SensorDeviceClass.ENERGY, SensorDeviceClass.WATER})
 
     def __init__(
         self,
@@ -926,6 +963,11 @@ class SmartHQMeterSensor(SmartHQServiceSensor):
             hass, entry, device_id, service_id, dev_name,
             label, "meterValue", device_class, unit, unique_id,
             translation_key=translation_key,
+        )
+        self._attr_state_class = (
+            SensorStateClass.TOTAL_INCREASING
+            if device_class in self._CUMULATIVE_DEVICE_CLASSES
+            else SensorStateClass.MEASUREMENT
         )
 
     @property
@@ -1036,6 +1078,7 @@ def _iter_dynamic_sensors(
     async_setup_entry) -- several _DYN_KEYS entries below have no serviceType
     restriction and would otherwise duplicate those sensors (see #48).
     """
+    show_alt_temps = entry.options.get(OPTION_SHOW_ALT_TEMPS, False)
     snap = _snapshot_for(hass, entry, device_id)
     services: Dict[str, Dict[str, Any]] = snap.get("services") or {}
     if not services:
@@ -1158,23 +1201,22 @@ def _iter_dynamic_sensors(
         stype, dom = rev.get(sid, (None, ""))
         # cooking.mode.v1 temperature keys → "Target" prefix
         if stype == "cloud.smarthq.service.cooking.mode.v1" and key in _C_KEYS | _F_KEYS:
-            unit_sfx = "" if key in _C_KEYS else " (°F)"
             if "cavity" in key.lower():
-                label = f"Cavity Target Temperature{unit_sfx}"
+                label = "Cavity Target Temperature"
             elif "probe" in key.lower():
-                label = f"Probe Target Temperature{unit_sfx}"
+                label = "Probe Target Temperature"
             else:
-                label = f"Target Temperature{unit_sfx}"
+                label = "Target Temperature"
         else:
             label = _label_for_key(
                 key,
                 stype or "",
                 dom or "",
                 service_device_type=st.get("serviceDeviceType") or "",
-                include_temp_unit=False,
             )
-            if entry.options.get(OPTION_SHOW_ALT_TEMPS, False) and key in _C_KEYS | _F_KEYS:
-                label += " (°C)" if key in _C_KEYS else " (°F)"
+        if show_alt_temps and key in _C_KEYS | _F_KEYS:
+            # Both units are exposed, so the pair needs telling apart.
+            label += " (°C)" if key in _C_KEYS else " (°F)"
 
         unit = dyn.unit
         dev_class = dyn.device_class
@@ -1206,23 +1248,22 @@ def _iter_dynamic_sensors(
 
         # cooking.mode.v1 temperature keys → "Target" prefix
         if stype == "cloud.smarthq.service.cooking.mode.v1" and key in _C_KEYS | _F_KEYS:
-            unit_sfx = "" if key in _C_KEYS else " (°F)"
             if "cavity" in key.lower():
-                label = f"Cavity Target Temperature{unit_sfx}"
+                label = "Cavity Target Temperature"
             elif "probe" in key.lower():
-                label = f"Probe Target Temperature{unit_sfx}"
+                label = "Probe Target Temperature"
             else:
-                label = f"Target Temperature{unit_sfx}"
+                label = "Target Temperature"
         else:
             label = _label_for_key(
                 key,
                 stype or "",
                 dom or "",
                 service_device_type=st.get("serviceDeviceType") or "",
-                include_temp_unit=False,
             )
-            if entry.options.get(OPTION_SHOW_ALT_TEMPS, False) and key in _C_KEYS | _F_KEYS:
-                label += " (°C)" if key in _C_KEYS else " (°F)"
+        if show_alt_temps and key in _C_KEYS | _F_KEYS:
+            # Both units are exposed, so the pair needs telling apart.
+            label += " (°C)" if key in _C_KEYS else " (°F)"
 
         if key in _C_KEYS:
             dev_class = SensorDeviceClass.TEMPERATURE
@@ -1589,6 +1630,7 @@ def _build_standard_sensors(
     stype: str,
     existing_uids: set[str],
     used_pairs: Optional[set] = None,
+    sdev: str = "",
 ) -> list[SensorEntity]:
     """Create sensor entities for a standard (data-driven) serviceType."""
     result: list[SensorEntity] = []
@@ -1596,7 +1638,7 @@ def _build_standard_sensors(
         uid = make_unique_id(device_id, service_id, f.uid)
         if uid in existing_uids:
             continue
-        label = f.label if f.label else _camel_to_words(f.key)
+        label = entity_label(dev_name, sdev, f.label if f.label else _camel_to_words(f.key))
         if f.cls == "L":
             entity: SensorEntity = SmartHQLaundryStateSensor(
                 hass, entry, device_id, service_id, dev_name, label, f.key, uid,
@@ -1667,6 +1709,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 service_id = svc.get("id") or svc.get("serviceId") or ""
                 cmds: list = svc.get("supportedCommands") or []
                 cfg = svc.get("config") or {}
+                sdev = svc.get("serviceDeviceType") or ""
 
                 # ── Allowlist check ──
                 if get_service_mapping(stype) is None:
@@ -1677,7 +1720,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
                 # ── temperature sensor (read-only) ──────────────────────────
                 if stype == TEMPERATURE_SERVICE and CMD_TEMPERATURE_SET not in cmds:
-                    sdev = svc.get("serviceDeviceType") or ""
                     # For measurement domain with two serviceDeviceType instances
                     # (Smoker: device.smoker=Cavity, device.probe=Ambient)
                     if "measurement" in dom.lower() and "smoker" in sdev.lower():
@@ -1688,39 +1730,45 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                             stype,
                             dom,
                             service_device_type=sdev,
-                            include_temp_unit=False,
                         )
-                        _prefix = sdev_prefix(sdev)
-                        label = f"{_prefix} {_base}".strip() if _prefix else _base
+                        label = entity_label(dev_name, sdev, _base)
 
-                    # Single entity whose unit follows the device's temperatureunits
-                    # setting at runtime.  Use the legacy °F uid for continuity.
+                    show_alt = entry.options.get(OPTION_SHOW_ALT_TEMPS, False)
                     uid = make_unique_id(device_id, service_id, "fahrenheit")
                     if uid not in existing_uids:
                         entities.append(SmartHQTempSensor(
                             hass, entry, device_id, service_id, dev_name,
-                            label, uid,
+                            f"{label} (°F)" if show_alt else label, uid,
+                            fixed_unit=UnitOfTemperature.FAHRENHEIT if show_alt else None,
                         ))
                         existing_uids.add(uid)
-                    unit_key = "fahrenheit" if _device_temp_is_f(hass, entry, device_id) else "celsiusConverted"
-                    if entry.options.get(OPTION_SHOW_ALT_TEMPS, False):
-                        used_pairs.add((service_id, unit_key))
-                    else:
-                        used_pairs.update((service_id, key) for key in _C_KEYS | _F_KEYS)
+                    if show_alt:
+                        alternate_uid = f"{DOMAIN}:{device_id}:sensor:{service_id}:celsiusConverted"
+                        if alternate_uid not in existing_uids:
+                            entities.append(SmartHQTempSensor(
+                                hass, entry, device_id, service_id, dev_name,
+                                f"{label} (°C)", alternate_uid,
+                                fixed_unit=UnitOfTemperature.CELSIUS,
+                            ))
+                            existing_uids.add(alternate_uid)
+                    used_pairs.update((service_id, key) for key in _C_KEYS | _F_KEYS)
 
                 # ── integer sensor (read-only) ──────────────────────────────
                 elif stype == INTEGER_SERVICE and CMD_INTEGER_SET not in cmds:
                     int_units = cfg.get("integerUnits") or ""
                     label_base = cfg.get("label") or _camel_to_words(dom.split(".")[-1])
+                    label_base = entity_label(dev_name, sdev, label_base)
                     ha_unit, dev_class = _integer_units_to_ha(int_units)
                     # Integer services always carry a numeric value. When no unit
                     # or device class could be derived (unitless readings such as
                     # "level"/"count"/"unitless" or an absent unit), mark the
                     # sensor as a unitless MEASUREMENT so HA graphs the number
-                    # instead of rendering it as a categorical string.
+                    # instead of rendering it as a categorical string. Integer
+                    # temperatures are measurements too, so they get statistics.
+                    unitless = ha_unit is None and dev_class is None
                     state_class = (
                         SensorStateClass.MEASUREMENT
-                        if ha_unit is None and dev_class is None
+                        if unitless or dev_class == SensorDeviceClass.TEMPERATURE
                         else None
                     )
                     uid = make_unique_id(device_id, service_id, "integer")
@@ -1765,6 +1813,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 # ── double sensor (float value) ─────────────────────────────
                 elif stype == DOUBLE_SERVICE:
                     label_base = cfg.get("label") or _camel_to_words(dom.split(".")[-1])
+                    label_base = entity_label(dev_name, sdev, label_base)
                     uid = make_unique_id(device_id, service_id, "double")
                     if uid not in existing_uids:
                         entities.append(SmartHQServiceSensor(
@@ -1780,6 +1829,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 elif stype == STRING_SERVICE and CMD_STRING_SET not in cmds:
                     # Read-only: expose as sensor. Writable case → text.py
                     label_base = cfg.get("label") or _camel_to_words(dom.split(".")[-1])
+                    label_base = entity_label(dev_name, sdev, label_base)
                     uid = make_unique_id(device_id, service_id, "string")
                     if uid not in existing_uids:
                         entities.append(SmartHQServiceSensor(
@@ -1795,6 +1845,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     entities.extend(_build_standard_sensors(
                         hass, entry, device_id, service_id, dev_name, stype, existing_uids,
                         used_pairs,
+                        sdev=sdev,
                     ))
 
 

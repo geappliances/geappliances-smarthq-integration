@@ -24,7 +24,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME, sdev_prefix
+from .const import DOMAIN, MANUFACTURER, DEFAULT_NAME, sdev_prefix, strip_device_name
 from .dispatcher import SIGNAL_DEVICE_UPDATED
 from .service_registry import (
     TOGGLE_SERVICE,
@@ -130,7 +130,9 @@ async def async_setup_entry(hass, entry, async_add_entities):
         # This prevents duplicate switch entities when the same domain appears in
         # multiple service instances (e.g. Smoker Light State Service appears once
         # for the smoker serviceDeviceType and once for the light serviceDeviceType).
-        seen_switch_domains: set[tuple[str, str]] = set()
+        # Toggles key on (serviceType, domainType, label); mode switches on
+        # (serviceType, domainType).
+        seen_switch_domains: set[tuple[str, ...]] = set()
 
         for svc in services_list:
             if not isinstance(svc, dict):
@@ -152,20 +154,26 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
             # ── Route to entity builder based on serviceType ──
             if stype == TOGGLE_SERVICE and CMD_TOGGLE_SET in cmds:
-                # Skip if this device already has a toggle switch for this domain.
+                # Skip if this device already has this toggle switch.
                 # Some devices expose the same domainType (e.g. controls.lock) as a
                 # separate toggle service instance per serviceDeviceType, which would
                 # otherwise create multiple identically-labeled switch entities
                 # (see MODE_SERVICE dedup below for the same class of issue).
-                dedup_key = (stype, dom)
+                # The label is part of the key so a domain shared by two
+                # sub-devices with different labels keeps both: a refrigerator has
+                # a "turbo" toggle for the freezer and another for fresh food. The
+                # domain stays in the key so two domains that happen to share a
+                # label (controls.lock and override are both "Control Lock") do not
+                # hide each other.
+                label, icon = _label_for_toggle(dom, svc.get("serviceDeviceType") or "")
+                dedup_key = (stype, dom, label)
                 if dedup_key in seen_switch_domains:
                     _LOGGER.debug(
-                        "[SWITCH] Skipping duplicate toggle switch for device=%s domain=%s svc=%s",
-                        device_id, dom, service_id,
+                        "[SWITCH] Skipping duplicate toggle switch for device=%s domain=%s label=%s svc=%s",
+                        device_id, dom, label, service_id,
                     )
                     continue
                 seen_switch_domains.add(dedup_key)
-                label, icon = _label_for_toggle(dom, svc.get("serviceDeviceType") or "")
                 entities.append(SmartHQToggleSwitch(
                     hass=hass, entry=entry, ws=ws,
                     device_id=device_id, service_id=service_id,
@@ -252,7 +260,7 @@ class _SmartHQSwitchBase(SwitchEntity):
         self._service_id = service_id
         info = _dev_payload(hass, entry, device_id).get("info") or {}
         dev_name = info.get("nickname") or info.get("name") or DEFAULT_NAME
-        self._attr_name = f"{dev_name} {label}"
+        self._attr_name = strip_device_name(dev_name, label)
         self._attr_icon = icon
         self._attr_unique_id = unique_id
 
@@ -417,7 +425,7 @@ def _icon_for_setting(title: str) -> str:
     """Pick an MDI icon based on alert/notification title keywords."""
     t = title.lower()
     if "door" in t:
-        return "mdi:door-alert"
+        return "mdi:door"
     if "smoke" in t or "clear" in t:
         return "mdi:smoke-detector"
     if "preheat" in t:
@@ -472,7 +480,7 @@ class SmartHQSettingSwitch(SwitchEntity):
         self._device_id = device_id
         self._rule_id = rule_id
         self._title = title
-        self._attr_name = f"{dev_name} {title}"
+        self._attr_name = title
         self._attr_unique_id = unique_id
         self._attr_icon = _icon_for_setting(title)
         self._attr_entity_category = EntityCategory.CONFIG  # shown under Configuration, not Controls
