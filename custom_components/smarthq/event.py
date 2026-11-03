@@ -10,12 +10,15 @@ state is the time of the last alert, with the alert type as `event_type`.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Dict, List
 
-from homeassistant.components.event import EventEntity
+from homeassistant.components.event import EventEntity, EventExtraStoredData
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .service_registry import COMMON_ALERTS
@@ -53,6 +56,17 @@ def alert_event_type(token: str) -> str:
     return token[len(ALERT_PREFIX) :] if token.startswith(ALERT_PREFIX) else token
 
 
+@dataclass
+class AlertEventStoredData(EventExtraStoredData):
+    """The base event data, plus the last `lastAlertTime` seen per alert type.
+
+    `as_dict` is `asdict`, so the extra field is stored alongside the base
+    ones, and the base `from_dict` ignores it.
+    """
+
+    last_alert_times: Dict[str, str] = field(default_factory=dict)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
     """Set up one alert event entity per device."""
     store = _store(hass, entry)
@@ -79,13 +93,28 @@ class SmartHQAlertEvent(EventEntity):
         self._device_id = device_id
         self._attr_unique_id = f"{DOMAIN}:{device_id}:alert_event"
         self._attr_event_types = list(event_types)
+        # Alert type -> lastAlertTime of the last occurrence fired, kept across restarts.
+        self._last_alert_times: Dict[str, datetime] = {}
 
     @property
     def device_info(self):
         return _device_info_for(self.hass, self._entry, self._device_id)
 
+    @property
+    def extra_restore_state_data(self) -> AlertEventStoredData:
+        base = super().extra_restore_state_data
+        return AlertEventStoredData(
+            base.last_event_type,
+            base.last_event_attributes,
+            {token: t.isoformat() for token, t in self._last_alert_times.items()},
+        )
+
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
+        if (stored := await self.async_get_last_extra_data()) is not None:
+            for token, value in (stored.as_dict().get("last_alert_times") or {}).items():
+                if (parsed := dt_util.parse_datetime(value)) is not None:
+                    self._last_alert_times[token] = parsed
         self.async_on_remove(self.hass.bus.async_listen(EVENT_SMARTHQ_ALERT, self._handle_alert))
 
     @callback
@@ -97,12 +126,24 @@ class SmartHQAlertEvent(EventEntity):
         if not isinstance(token, str):
             return
 
+        body = data.get("data") or {}
+        # The same occurrence can arrive again (e.g. resent after a reconnect).
+        # It carries the same lastAlertTime, so only a newer one counts. An alert
+        # without a parseable time can't be told apart and always fires.
+        raw_time = body.get("lastAlertTime")
+        alert_time = dt_util.parse_datetime(raw_time) if isinstance(raw_time, str) else None
+        if alert_time is not None:
+            last = self._last_alert_times.get(token)
+            if last is not None and alert_time <= last:
+                _LOGGER.debug("[ALERT_EVENT] %s: %s at %s already fired", self._device_id[:8], token, raw_time)
+                return
+            self._last_alert_times[token] = alert_time
+
         event_type = alert_event_type(token)
         if event_type not in self._attr_event_types:
             # Alert types are open-ended and model-specific; learn new ones as they arrive.
             self._attr_event_types = [*self._attr_event_types, event_type]
 
-        body = data.get("data") or {}
         attributes: Dict[str, Any] = {"alert_type": token}
         if body.get("lastAlertTime"):
             attributes["alert_time"] = body["lastAlertTime"]

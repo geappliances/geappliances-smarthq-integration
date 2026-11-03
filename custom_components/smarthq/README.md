@@ -235,8 +235,11 @@ conditions:
     value_template: "{{ trigger.to_state.attributes.event_type == 'endofcycle.minutesleft.5' }}"
 ```
 
+An alert received again with the same `lastAlertTime` (for example resent after a reconnect or a
+restart) is the same occurrence and does not fire again.
+
 Every alert is also fired on the HA event bus as `smarthq_alert` (`device_id`, `alert_type`,
-`active`, `data`).
+`active`, `data`). The bus event is not deduplicated.
 
 ### Entity Platforms
 | Platform | Purpose |

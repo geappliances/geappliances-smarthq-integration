@@ -47,6 +47,36 @@ def test_repeated_alert_fires_again():
     assert entity.async_write_ha_state.call_count == 2
 
 
+def test_same_occurrence_fires_once():
+    """An alert resent with the same lastAlertTime (e.g. after a reconnect) is not a new occurrence."""
+    entity = _create_entity()
+    entity._handle_alert(_alert(data={"lastAlertTime": "2026-10-27T13:40:39.574Z"}))
+    entity._handle_alert(_alert(data={"lastAlertTime": "2026-10-27T13:40:39.574Z"}))
+    entity._handle_alert(_alert(data={"lastAlertTime": "2026-10-27T13:00:00.000Z"}))
+    entity.async_write_ha_state.assert_called_once()
+
+    entity._handle_alert(_alert(data={"lastAlertTime": "2026-10-28T09:40:51.112Z"}))
+    assert entity.async_write_ha_state.call_count == 2
+
+
+def test_alert_times_are_per_type():
+    """Another alert type at an earlier time still fires."""
+    entity = _create_entity()
+    entity._handle_alert(_alert(data={"lastAlertTime": "2026-10-27T13:40:39.574Z"}))
+    entity._handle_alert(
+        _alert(alert_type="cloud.smarthq.alert.startofcycle", data={"lastAlertTime": "2026-10-27T11:41:00.000Z"})
+    )
+    assert entity.async_write_ha_state.call_count == 2
+
+
+def test_alert_times_are_stored_for_restore():
+    entity = _create_entity()
+    entity._handle_alert(_alert(data={"lastAlertTime": "2026-10-27T13:40:39.574Z"}))
+    stored = entity.extra_restore_state_data.as_dict()
+    assert stored["last_event_type"] == "endofcycle.minutesleft.5"
+    assert stored["last_alert_times"] == {ALERT: "2026-10-27T13:40:39.574000+00:00"}
+
+
 def test_other_device_ignored():
     entity = _create_entity()
     entity._handle_alert(_alert(device_id="other-device"))
