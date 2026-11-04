@@ -305,34 +305,40 @@ class SmartHQThermostatClimate(ClimateEntity):
 
     @property
     def current_temperature(self) -> float | None:
-        # thermostat.v1 doesn't expose a measured temperature field, but the
-        # same device typically publishes a sibling `service.temperature`
-        # service with a `fahrenheit` reading (surfaced as the "Ambient
-        # Temperature (°F)" sensor). Pull from there so Apple Home / the HA
-        # thermostat card show the actual room temp instead of "unknown".
+        # thermostat.v1 doesn't expose a measured temperature field.
         snap = _store(self.hass, self._entry).get(self._device_id) or {}
         services = (snap.get("snapshot") or {}).get("services") or {}
-        preferred: float | None = None
-        fallback: float | None = None
+        preferred: tuple[int, float] | None = None
         for sid, svc in services.items():
             if sid == self._service_id:
                 continue
             if (svc.get("serviceType") or "") != TEMPERATURE_SERVICE:
                 continue
             raw = svc.get("fahrenheit")
+            is_celsius = raw is None
             if raw is None:
-                continue
+                raw = svc.get("celsiusConverted")
+                if raw is None:
+                    continue
             try:
                 val = float(raw)
             except (TypeError, ValueError):
                 continue
-            dom = (svc.get("domainType") or "").lower()
-            if "measurement" in dom or "ambient" in dom:
-                preferred = val
-                break
-            if fallback is None:
-                fallback = val
-        return preferred if preferred is not None else fallback
+            if is_celsius:
+                val = val * 9 / 5 + 32
+
+            domain_parts = set((svc.get("domainType") or "").lower().split("."))
+            if "outdoor" in domain_parts:
+                continue
+            if {"indoor", "ambient"}.issubset(domain_parts):
+                priority = 0
+            elif "ambient" in domain_parts or "measurement" in domain_parts:
+                priority = 1
+            else:
+                continue
+            if preferred is None or priority < preferred[0]:
+                preferred = (priority, val)
+        return preferred[1] if preferred is not None else None
 
     @property
     def target_temperature(self) -> float | None:

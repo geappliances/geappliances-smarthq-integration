@@ -3,11 +3,13 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from homeassistant.components.climate import HVACAction, HVACMode
 
 from custom_components.smarthq.climate import SmartHQThermostatClimate
 from custom_components.smarthq.const import DOMAIN
-from custom_components.smarthq.service_registry import POWER_USAGE_SERVICE
+from custom_components.smarthq.sensor import _label_for_key
+from custom_components.smarthq.service_registry import POWER_USAGE_SERVICE, TEMPERATURE_SERVICE
 
 ENERGY_SAVER_MODE = "cloud.smarthq.type.thermostatmode.cool.energysaver"
 NATIVE_AUTO_MODE = "cloud.smarthq.type.thermostatmode.auto"
@@ -112,3 +114,118 @@ def test_hvac_action_reports_off_and_fan_only() -> None:
 
     _set_thermostat_state(entity, on=False, mode=fan_mode)
     assert entity.hvac_action == HVACAction.OFF
+
+
+def test_current_temperature_prefers_indoor_ambient_regardless_of_service_order() -> None:
+    """Prefer measured indoor air over outdoor ambient and setpoint services."""
+    entity, _ = _create_entity()
+    entity.hass.data[DOMAIN]["test-entry"]["store"] = {
+        "test-device": {
+            "snapshot": {
+                "services": {
+                    "thermostat": {"serviceType": "thermostat"},
+                    "outdoor": {
+                        "serviceType": TEMPERATURE_SERVICE,
+                        "domainType": "cloud.smarthq.domain.outdoor.ambient",
+                        "fahrenheit": 58,
+                    },
+                    "setpoint": {
+                        "serviceType": TEMPERATURE_SERVICE,
+                        "domainType": "cloud.smarthq.domain.indoor",
+                        "serviceDeviceType": "cloud.smarthq.device.outlet",
+                        "fahrenheit": 72,
+                    },
+                    "indoor": {
+                        "serviceType": TEMPERATURE_SERVICE,
+                        "domainType": "cloud.smarthq.domain.indoor.ambient",
+                        "fahrenheit": 73,
+                    },
+                }
+            }
+        }
+    }
+
+    assert round(entity.current_temperature, 1) == 73
+
+    services = entity.hass.data[DOMAIN]["test-entry"]["store"]["test-device"]["snapshot"]["services"]
+    services = dict(reversed(list(services.items())))
+    entity.hass.data[DOMAIN]["test-entry"]["store"]["test-device"]["snapshot"]["services"] = services
+    assert round(entity.current_temperature, 1) == 73
+
+
+def test_current_temperature_ignores_indoor_target_without_measured_ambient() -> None:
+    """A setpoint-only temperature service is not a measured room temperature."""
+    entity, _ = _create_entity()
+    entity.hass.data[DOMAIN]["test-entry"]["store"] = {
+        "test-device": {
+            "snapshot": {
+                "services": {
+                    "thermostat": {"serviceType": "thermostat"},
+                    "setpoint": {
+                        "serviceType": TEMPERATURE_SERVICE,
+                        "domainType": "cloud.smarthq.domain.indoor",
+                        "serviceDeviceType": "cloud.smarthq.device.outlet",
+                        "fahrenheit": 72,
+                    },
+                }
+            }
+        }
+    }
+
+    assert entity.current_temperature is None
+
+
+def test_current_temperature_converts_celsius_when_fahrenheit_is_missing() -> None:
+    entity, _ = _create_entity()
+    entity.hass.data[DOMAIN]["test-entry"]["store"] = {
+        "test-device": {
+            "snapshot": {
+                "services": {
+                    "thermostat": {"serviceType": "thermostat"},
+                    "indoor": {
+                        "serviceType": TEMPERATURE_SERVICE,
+                        "domainType": "cloud.smarthq.domain.indoor.ambient",
+                        "celsiusConverted": 22.7777777778,
+                    },
+                }
+            }
+        }
+    }
+
+    assert round(entity.current_temperature, 1) == 73
+
+
+def test_temperature_labels_distinguish_indoor_outdoor_and_setpoint() -> None:
+    temp = TEMPERATURE_SERVICE
+    assert _label_for_key(
+        "fahrenheit", temp, "cloud.smarthq.domain.indoor.ambient"
+    ) == "Indoor Ambient Temperature"
+    assert _label_for_key(
+        "fahrenheit", temp, "cloud.smarthq.domain.outdoor.ambient"
+    ) == "Outdoor Ambient Temperature"
+    assert _label_for_key(
+        "fahrenheit",
+        temp,
+        "cloud.smarthq.domain.indoor",
+        service_device_type="cloud.smarthq.device.outlet",
+    ) == "Indoor Target Temperature"
+
+
+@pytest.mark.parametrize("domain,expected", [
+    ("cloud.smarthq.domain.ambient", 71),
+    ("cloud.smarthq.domain.measurement", 71),
+    ("cloud.smarthq.domain.outdoor.ambient", None),
+    ("cloud.smarthq.domain.indoor", None),
+])
+def test_current_temperature_only_uses_measured_ambient_fallback(domain, expected):
+    entity, _ = _create_entity()
+    entity.hass.data[DOMAIN]["test-entry"]["store"] = {
+        "test-device": {"snapshot": {"services": {
+            "temperature": {
+                "serviceType": TEMPERATURE_SERVICE,
+                "domainType": domain,
+                "fahrenheit": 71,
+            },
+        }}},
+    }
+    assert entity.current_temperature == expected
