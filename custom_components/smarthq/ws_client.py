@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import aiohttp
@@ -18,6 +19,15 @@ _LOGGER = logging.getLogger(__name__)
 
 PING_IDLE_SECONDS = 60
 RESUBSCRIBE_SECONDS = 300
+
+# The websocket endpoint carries the user's access token in its query string,
+# and aiohttp repeats the full URL in handshake errors (e.g. a 401).
+_ACCESS_TOKEN_RE = re.compile(r"(access_token=)[^&\s'\"]+")
+
+
+def _redact(text: object) -> str:
+    """Mask the access token in a websocket URL or an error that quotes one."""
+    return _ACCESS_TOKEN_RE.sub(r"\1**REDACTED**", str(text))
 
 
 def _iter_service_items(container: Any) -> Iterable[Dict[str, Any]]:
@@ -90,7 +100,7 @@ class SmartHQWebsocket:
         while not self._stopped.is_set():
             try:
                 endpoint = await self._api.async_get_websocket_endpoint()
-                _LOGGER.info("Connecting SmartHQ WS -> %s", endpoint)
+                _LOGGER.info("Connecting SmartHQ WS -> %s", _redact(endpoint))
 
                 async with self._session.ws_connect(endpoint, heartbeat=PING_IDLE_SECONDS) as ws:
                     self._ws = ws
@@ -140,11 +150,12 @@ class SmartHQWebsocket:
                 break
             except Exception as e:
                 consecutive_failures += 1
+                error = _redact(e)
 
                 if consecutive_failures >= max_retries and not notified_failure:
                     error_msg = (
                         f"SmartHQ WebSocket connection failed {consecutive_failures} times.\n\n"
-                        f"Last error: {str(e)}\n\n"
+                        f"Last error: {error}\n\n"
                         f"Please check:\n"
                         f"- Internet connection\n"
                         f"- SmartHQ service status\n"
@@ -157,7 +168,7 @@ class SmartHQWebsocket:
                     _LOGGER.error(
                         "SmartHQ WS: %d consecutive failures. Will keep retrying in the "
                         "background. Last error: %s",
-                        consecutive_failures, e
+                        consecutive_failures, error
                     )
 
                     # Send persistent notification to Home Assistant UI (once per outage)
@@ -178,7 +189,7 @@ class SmartHQWebsocket:
 
                 _LOGGER.warning(
                     "WS error (attempt %d): %s; reconnect in %s sec",
-                    consecutive_failures, e, backoff
+                    consecutive_failures, error, backoff
                 )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)
