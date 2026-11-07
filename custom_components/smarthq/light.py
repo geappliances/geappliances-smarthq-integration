@@ -45,6 +45,20 @@ COLORSPACE_RGB_INTENSITY = "cloud.smarthq.type.colorspace.rgb.intensity"
 COLORSPACE_WHITENESS = "cloud.smarthq.type.colorspace.whiteness"
 
 
+def _service_state(hass: HomeAssistant, entry: ConfigEntry, device_id: str, service_id: str) -> dict:
+    """Return a service's current state: live WebSocket snapshot first, REST coordinator data second."""
+    bucket = hass.data.get(DOMAIN, {}).get(entry.entry_id) or {}
+    snap = ((bucket.get("store") or {}).get(device_id) or {}).get("snapshot") or {}
+    live = (snap.get("services") or {}).get(service_id)
+    if isinstance(live, dict) and live:
+        return live
+    coordinator = bucket.get("coordinator")
+    for svc in get_device_services(coordinator.data if coordinator else {}, device_id):
+        if (svc.get("id") or svc.get("serviceId")) == service_id:
+            return svc.get("state") or {}
+    return {}
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
@@ -182,6 +196,13 @@ class SmartHQColorLight(LightEntity):
         self._attr_brightness: Optional[int] = None
 
         self._state: dict = {}
+        # Last non-zero intensity (0-100), used to restore brightness on turn_on.
+        self._last_intensity: Optional[int] = None
+
+    @property
+    def _uses_rgb_intensity(self) -> bool:
+        """True for devices that only accept red/green/blue/intensity (not an "rgb" hex string)."""
+        return COLORSPACE_RGB_INTENSITY in self._color_spaces and COLORSPACE_RGB not in self._color_spaces
 
     @property
     def device_info(self) -> dict:
@@ -195,24 +216,18 @@ class SmartHQColorLight(LightEntity):
         self.async_on_remove(
             async_dispatcher_connect(
                 self.hass,
-                f"{SIGNAL_DEVICE_UPDATED}_{self._device_id}",
+                SIGNAL_DEVICE_UPDATED.format(device_id=self._device_id),
                 self._handle_coordinator_update,
             )
         )
+        self._state = _service_state(self.hass, self._entry, self._device_id, self._service_id)
+        self._update_from_state()
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        """Update state from coordinator data."""
-        from .coordinator import SmartHQCoordinator
-        bucket = self.hass.data[DOMAIN][self._entry.entry_id]
-        coordinator: SmartHQCoordinator = bucket["coordinator"]
-        dev_data = coordinator.data.get(self._device_id, {})
-        services = get_device_services(coordinator.data, self._device_id)
-        for svc in services:
-            if (svc.get("id") or svc.get("serviceId")) == self._service_id:
-                self._state = svc.get("state") or {}
-                self._update_from_state()
-                break
+        """Update state from the live snapshot (falling back to coordinator data)."""
+        self._state = _service_state(self.hass, self._entry, self._device_id, self._service_id)
+        self._update_from_state()
         self.async_write_ha_state()
 
     def _update_from_state(self) -> None:
@@ -244,7 +259,12 @@ class SmartHQColorLight(LightEntity):
             # intensity → brightness (0-100 → 0-255)
             if "intensity" in st:
                 try:
-                    self._attr_brightness = round(int(st["intensity"]) * 255 / 100)
+                    intensity = int(st["intensity"])
+                    self._attr_brightness = round(intensity * 255 / 100)
+                    if intensity > 0:
+                        self._last_intensity = intensity
+                    else:
+                        self._attr_is_on = False
                 except (TypeError, ValueError):
                     pass
 
@@ -280,6 +300,33 @@ class SmartHQColorLight(LightEntity):
 
         command: dict[str, Any] = {}
 
+        # rgb.intensity devices reject "rgb" with outcome.developererror; they take
+        # red/green/blue (0-255) plus intensity (0-100).
+        if self._uses_rgb_intensity:
+            rgb = kwargs.get(ATTR_RGB_COLOR) or self._attr_rgb_color
+            if not rgb or not any(rgb):
+                rgb = (255, 255, 255)
+            r, g, b = (int(c) for c in rgb)
+            if ATTR_BRIGHTNESS in kwargs:
+                intensity = max(1, round(kwargs[ATTR_BRIGHTNESS] * 100 / 255))
+            else:
+                current = round((self._attr_brightness or 0) * 100 / 255)
+                intensity = current if current > 0 else (self._last_intensity or 100)
+            await self._ws.async_set_color(
+                device_id=self._device_id,
+                service_id=self._service_id,
+                red=r,
+                green=g,
+                blue=b,
+                intensity=intensity,
+            )
+            self._attr_rgb_color = (r, g, b)
+            self._attr_brightness = round(intensity * 255 / 100)
+            self._last_intensity = intensity
+            self._attr_is_on = True
+            self.async_write_ha_state()
+            return
+
         # RGB
         if ATTR_RGB_COLOR in kwargs:
             r, g, b = kwargs[ATTR_RGB_COLOR]
@@ -312,8 +359,23 @@ class SmartHQColorLight(LightEntity):
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        """Turn off: set rgb to #000000."""
+        """Turn off: intensity 0 for rgb.intensity devices, otherwise rgb #000000."""
         if not self._controllable or not self._ws:
+            return
+        if self._uses_rgb_intensity:
+            # Keep the current color so the next turn_on restores it.
+            rgb = self._attr_rgb_color if self._attr_rgb_color and any(self._attr_rgb_color) else (255, 255, 255)
+            r, g, b = (int(c) for c in rgb)
+            await self._ws.async_set_color(
+                device_id=self._device_id,
+                service_id=self._service_id,
+                red=r,
+                green=g,
+                blue=b,
+                intensity=0,
+            )
+            self._attr_is_on = False
+            self.async_write_ha_state()
             return
         await self._ws.async_set_color(
             device_id=self._device_id,
@@ -391,22 +453,17 @@ class SmartHQAccentLight(LightEntity):
         self.async_on_remove(
             async_dispatcher_connect(
                 self.hass,
-                f"{SIGNAL_DEVICE_UPDATED}_{self._device_id}",
+                SIGNAL_DEVICE_UPDATED.format(device_id=self._device_id),
                 self._handle_coordinator_update,
             )
         )
+        self._state = _service_state(self.hass, self._entry, self._device_id, self._service_id)
+        self._update_from_state()
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        from .coordinator import SmartHQCoordinator
-        bucket = self.hass.data[DOMAIN][self._entry.entry_id]
-        coordinator: SmartHQCoordinator = bucket["coordinator"]
-        services = get_device_services(coordinator.data, self._device_id)
-        for svc in services:
-            if (svc.get("id") or svc.get("serviceId")) == self._service_id:
-                self._state = svc.get("state") or {}
-                self._update_from_state()
-                break
+        self._state = _service_state(self.hass, self._entry, self._device_id, self._service_id)
+        self._update_from_state()
         self.async_write_ha_state()
 
     def _update_from_state(self) -> None:
