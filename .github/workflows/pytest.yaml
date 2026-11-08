@@ -1,0 +1,26 @@
+name: Pytest
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: Checkout
+        uses: "actions/checkout@v4"
+      - name: Set up Python
+        uses: "actions/setup-python@v5"
+        with:
+          python-version: "3.14"
+          cache: "pip"
+          cache-dependency-path: "requirements_test.txt"
+      - name: Install test requirements
+        run: python -m pip install -r requirements_test.txt
+      - name: Run tests
+        run: python -m pytest

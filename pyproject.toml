@@ -64,5 +64,7 @@ score = false
 max-line-length = 120
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["custom_components/smarthq/tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 norecursedirs = [".git", "testing_config"]
