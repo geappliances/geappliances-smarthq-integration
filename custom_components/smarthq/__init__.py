@@ -20,6 +20,41 @@ PLATFORMS = ["sensor", "number", "switch", "binary_sensor", "select", "button", 
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
+_SENSITIVE_KEY_PARTS = ("mac", "serial", "email", "token", "password", "address")
+
+
+def _redact_for_diagnose(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: "<redacted>"
+            if str(key).lower().endswith("id") or any(part in str(key).lower() for part in _SENSITIVE_KEY_PARTS)
+            else _redact_for_diagnose(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_for_diagnose(item) for item in value]
+    return value
+
+
+def _diagnose_service_details(services: Any, domain_contains: str) -> str:
+    """List config and supportedCommands of services whose domainType contains the text."""
+    needle = domain_contains.lower()
+    blocks = []
+    for svc in services if isinstance(services, list) else []:
+        if not isinstance(svc, dict) or needle not in (svc.get("domainType") or "").lower():
+            continue
+        blocks.append(
+            f"[{str(svc.get('serviceId') or svc.get('id') or '')[:12]}]\n"
+            f"  type              : {svc.get('serviceType') or ''}\n"
+            f"  domain            : {svc.get('domainType') or ''}\n"
+            f"  supportedCommands : {svc.get('supportedCommands') or []}\n"
+            f"  config            : {_redact_for_diagnose(svc.get('config') or {})}\n"
+        )
+    if not blocks:
+        return f"[SERVICE CONFIG] no service domain contains '{domain_contains}'\n"
+    return "[SERVICE CONFIG]\n" + "\n".join(blocks)
+
+
 async def _maybe_await(x):
     """Await if x is a coroutine, else return as-is."""
     if asyncio.iscoroutine(x):
@@ -224,8 +259,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         Usage: smarthq.diagnose  data: {device_id: "<full-device-id>"}
         Omit device_id to list all known device IDs.
+        Add domain_contains (for example "strategy") to also list the config and
+        supportedCommands of the matching services.
         """
         target_did = call.data.get("device_id")
+        domain_contains = str(call.data.get("domain_contains") or "")
         cur_store = bucket.get("store") or {}
 
         if not target_did:
@@ -277,6 +315,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             f"  first_svc_keys={first_svc_keys}\n"
         )
         lines.append("---\n")
+        if domain_contains:
+            lines.append(_diagnose_service_details(coord_svcs_raw, domain_contains))
+            lines.append("---\n")
 
         for sid, st in services.items():
             if not isinstance(st, dict):
