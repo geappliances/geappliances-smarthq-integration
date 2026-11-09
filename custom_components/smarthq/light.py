@@ -261,10 +261,10 @@ class SmartHQColorLight(LightEntity):
                 try:
                     intensity = int(st["intensity"])
                     self._attr_brightness = round(intensity * 255 / 100)
+                    # Intensity decides on/off when present, even if red/green/blue are all 0.
+                    self._attr_is_on = intensity > 0
                     if intensity > 0:
                         self._last_intensity = intensity
-                    else:
-                        self._attr_is_on = False
                 except (TypeError, ValueError):
                     pass
 
