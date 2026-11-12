@@ -226,7 +226,7 @@ class SmartHQThermostatClimate(ClimateEntity):
         self._attr_target_temperature_step = 1.0
 
         # Build supported features
-        features = ClimateEntityFeature.TARGET_TEMPERATURE
+        features = ClimateEntityFeature.TARGET_TEMPERATURE | ClimateEntityFeature.TURN_ON | ClimateEntityFeature.TURN_OFF
 
         if fan_modes:
             features |= ClimateEntityFeature.FAN_MODE

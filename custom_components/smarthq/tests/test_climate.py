@@ -4,7 +4,9 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from homeassistant.components.climate import HVACAction, HVACMode
+from homeassistant.components.climate import ClimateEntityFeature, HVACAction, HVACMode
+from homeassistant.setup import async_setup_component
+from pytest_homeassistant_custom_component.common import setup_test_component_platform
 
 from custom_components.smarthq.climate import SmartHQThermostatClimate
 from custom_components.smarthq.const import DOMAIN
@@ -229,3 +231,51 @@ def test_current_temperature_only_uses_measured_ambient_fallback(domain, expecte
         }}},
     }
     assert entity.current_temperature == expected
+
+
+def test_supported_features_include_turn_on_and_turn_off() -> None:
+    entity, _ = _create_entity()
+    assert ClimateEntityFeature.TURN_ON in entity.supported_features
+    assert ClimateEntityFeature.TURN_OFF in entity.supported_features
+    assert ClimateEntityFeature.TARGET_TEMPERATURE in entity.supported_features
+
+
+@pytest.mark.parametrize(
+    "service,on,expected_on",
+    [
+        ("toggle", True, False),
+        ("toggle", False, True),
+        ("turn_off", True, False),
+        ("turn_on", False, True),
+    ],
+)
+async def test_power_services_through_home_assistant(hass, service, on, expected_on) -> None:
+    """Call the real climate services; HA gates them on TURN_ON / TURN_OFF."""
+    entry = MagicMock()
+    entry.entry_id = "test-entry"
+    client = AsyncMock()
+    hass.data[DOMAIN] = {"test-entry": {"store": {"test-device": {"snapshot": {"services": {
+        "test-thermostat": {"on": on, "mode": "cloud.smarthq.type.thermostatmode.cool"},
+    }}}}}}
+    entity = SmartHQThermostatClimate(
+        hass=hass,
+        entry=entry,
+        client=client,
+        device_id="test-device",
+        service_id="test-thermostat",
+        dev_name="Test AC",
+        svc_config={"supportedModes": ["cloud.smarthq.type.thermostatmode.cool"]},
+        unique_id="test-climate",
+    )
+    setup_test_component_platform(hass, "climate", [entity])
+    assert await async_setup_component(hass, "climate", {"climate": {"platform": "test"}})
+    await hass.async_block_till_done()
+    assert hass.states.get(entity.entity_id) is not None
+
+    await hass.services.async_call(
+        "climate", service, {"entity_id": entity.entity_id}, blocking=True
+    )
+
+    client.async_set_thermostat.assert_awaited_once_with(
+        "test-device", "test-thermostat", on=expected_on
+    )
