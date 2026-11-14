@@ -116,3 +116,76 @@ def test_registered_alert_tokens_filters_by_device_and_platform():
     with patch("custom_components.smarthq.binary_sensor.er") as er:
         er.async_entries_for_config_entry.return_value = entries
         assert list(_registered_alert_tokens(MagicMock(), entry, DEVICE_ID)) == [DOOR_ALERT]
+
+
+PAUSED_ALERT = "cloud.smarthq.alert.pausedcycle"
+COMPLETE_ALERT = "cloud.smarthq.alert.endofcycle"
+
+
+def _cycle_entity(token, state=None, alert=None):
+    entity = _create_alert_entity(token, {token: alert} if alert else {})
+    entity.hass.data[DOMAIN]["test-entry"]["store"][DEVICE_ID]["snapshot"] = {
+        "services": {"cycle": {"serviceType": "cloud.smarthq.service.dishwasher.state.v1", **(state or {})}}
+    }
+    return entity
+
+
+def test_idle_dishwasher_clears_stale_pause():
+    entity = _cycle_entity(PAUSED_ALERT, {"runStatus": "cloud.smarthq.type.runstatus.off"}, {"active": True})
+    assert entity.is_on is False
+
+
+def test_inactive_cycle_clears_pause():
+    entity = _cycle_entity(PAUSED_ALERT, {
+        "cycleIndication": "cloud.smarthq.type.dishwasher.cycle.indication.cycle.inactive"
+    }, {"active": True})
+    assert entity.is_on is False
+
+
+def test_pause_without_state_or_event_is_unknown():
+    assert _cycle_entity(PAUSED_ALERT).is_on is None
+
+
+def test_active_pause_remains_on():
+    assert _cycle_entity(PAUSED_ALERT, alert={"active": True}).is_on is True
+
+
+def test_cycle_complete_is_informational_and_unknown_until_event():
+    entity = _cycle_entity(COMPLETE_ALERT, {"runStatus": "cloud.smarthq.type.runstatus.off"})
+    assert entity.is_on is None
+    assert entity.device_class is None
+    assert entity.name == "Cycle Complete"
+    assert entity.unique_id == f"{DOMAIN}:{DEVICE_ID}:alert:{COMPLETE_ALERT}"
+
+
+def test_cycle_complete_follows_received_event():
+    assert _cycle_entity(COMPLETE_ALERT, alert={"active": True}).is_on is True
+    assert _cycle_entity(COMPLETE_ALERT, alert={"active": False}).is_on is False
+
+
+def test_cycle_entities_created_without_prior_event_or_registry():
+    import asyncio
+    from custom_components.smarthq import binary_sensor
+
+    entity = _cycle_entity(PAUSED_ALERT, {"runStatus": "cloud.smarthq.type.runstatus.off"})
+    added = []
+    with patch.object(binary_sensor, "_registered_alert_tokens", return_value=[]):
+        asyncio.run(binary_sensor.async_setup_entry(
+            entity.hass, entity._entry, lambda entities, **kwargs: added.extend(entities)
+        ))
+    cycle_entities = [sensor for sensor in added if sensor.unique_id.endswith((PAUSED_ALERT, COMPLETE_ALERT))]
+    assert len(cycle_entities) == 2
+    assert len({sensor.unique_id for sensor in cycle_entities}) == 2
+
+
+def test_cycle_entities_not_created_for_other_appliances():
+    import asyncio
+    from custom_components.smarthq import binary_sensor
+
+    entity = _create_alert_entity(COMMON_ALERT, {})
+    added = []
+    with patch.object(binary_sensor, "_registered_alert_tokens", return_value=[]):
+        asyncio.run(binary_sensor.async_setup_entry(
+            entity.hass, entity._entry, lambda entities, **kwargs: added.extend(entities)
+        ))
+    assert not any(sensor.unique_id.endswith((PAUSED_ALERT, COMPLETE_ALERT)) for sensor in added)

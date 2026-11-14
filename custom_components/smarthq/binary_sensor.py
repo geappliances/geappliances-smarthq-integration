@@ -233,7 +233,14 @@ async def async_setup_entry(
     #    startup — before any WS alert message is received — so automations
     #    can reference them reliably.
     for did in _known_devices(hass, entry):
-        for token in COMMON_ALERTS:
+        tokens = list(COMMON_ALERTS)
+        services = ((_store(hass, entry).get(did) or {}).get("snapshot") or {}).get("services") or {}
+        if any(
+            str(service.get("serviceType", "")).startswith("cloud.smarthq.service.dishwasher.state")
+            for service in services.values()
+        ):
+            tokens.extend(("cloud.smarthq.alert.pausedcycle", "cloud.smarthq.alert.endofcycle"))
+        for token in tokens:
             uid = f"{DOMAIN}:{did}:alert:{token}"
             if uid in created:
                 continue
@@ -430,6 +437,8 @@ async def async_setup_entry(
 # Known full codes get a readable name; otherwise each part is looked up here
 # and anything unknown is title-cased.
 _ALERT_NAMES: dict[str, str] = {
+    "pausedcycle": "Paused Cycle",
+    "endofcycle": "Cycle Complete",
     "door.open.freezer": "Freezer Door Open",
     "door.alarm.freezer": "Freezer Door Alarm",
     "left.door.alarm.freshfood": "Fresh Food Left Door Alarm",
@@ -467,7 +476,12 @@ class SmartHQAlertBinarySensor(BinarySensorEntity):
         self._token = token
         # The whole alert code, not its last word: "door.open.freezer" and
         # "door.alarm.freezer" must not both become "Alert: Freezer".
-        self._attr_name = f"Alert: {_alert_name(token)}"
+        if token == "cloud.smarthq.alert.endofcycle":
+            self._attr_name = "Cycle Complete"
+            self._attr_device_class = None
+            self._attr_icon = "mdi:check-circle-outline"
+        else:
+            self._attr_name = f"Alert: {_alert_name(token)}"
         self._attr_unique_id = f"{DOMAIN}:{device_id}:alert:{token}"
 
     def _get_alert(self) -> dict:
@@ -479,6 +493,22 @@ class SmartHQAlertBinarySensor(BinarySensorEntity):
 
     @property
     def is_on(self) -> bool | None:
+        if self._token == "cloud.smarthq.alert.pausedcycle":
+            snapshot = (_store(self.hass, self._entry).get(self._device_id) or {}).get("snapshot") or {}
+            services = snapshot.get("services") or {}
+            for service in services.values():
+                if not str(service.get("serviceType", "")).startswith("cloud.smarthq.service.dishwasher.state"):
+                    continue
+                if (
+                    service.get("runStatus") == "cloud.smarthq.type.runstatus.off"
+                    or service.get("cycleIndication")
+                    == "cloud.smarthq.type.dishwasher.cycle.indication.cycle.inactive"
+                ):
+                    return False
+            alert = self._get_alert()
+            if "active" in alert:
+                return bool(alert["active"])
+            return None  # No current evidence of pause state; do not invent OFF.
         a = self._get_alert()
         if "active" in a:
             return bool(a["active"])
