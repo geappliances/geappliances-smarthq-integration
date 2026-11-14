@@ -16,7 +16,7 @@ from .coordinator import SmartHQCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["sensor", "number", "switch", "binary_sensor", "select", "button", "climate", "water_heater", "light", "text"]
+PLATFORMS = ["sensor", "number", "switch", "binary_sensor", "event", "select", "button", "climate", "water_heater", "light", "text"]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
